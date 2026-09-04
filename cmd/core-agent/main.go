@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
+	agentipc "itagent/internal/agent/ipc"
 	"itagent/internal/agent/collector"
 	"itagent/internal/agent/config"
 	"itagent/internal/agent/identity"
@@ -135,12 +138,31 @@ func main() {
 		flush()
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var ipcSrv *agentipc.Server
+	if runtime.GOOS == "windows" {
+		ipcSrv = agentipc.NewServer(cfg, col, spool, u)
+		go func() {
+			if err := ipcSrv.Serve(ctx); err != nil {
+				log.Printf("ipc serve: %v", err)
+			}
+		}()
+	}
+
+	ticker := time.NewTicker(time.Duration(cfg.SpoolScanSec) * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-sig:
 			log.Print("shutting down")
 			return
-		default:
+		case <-ticker.C:
+		case <-ipcSrv.QuitChan():
+			log.Print("ipc quit received")
+			return
 		}
 
 		now := time.Now()
@@ -153,6 +175,5 @@ func main() {
 			fullDue = now.Add(time.Duration(cfg.FullIntervalSec) * time.Second)
 		}
 		flush()
-		time.Sleep(time.Duration(cfg.SpoolScanSec) * time.Second)
 	}
 }
