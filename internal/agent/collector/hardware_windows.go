@@ -50,4 +50,3 @@ func collectHardwareWindows() (protocol.Hardware, error) {
 	hw.SMART = collectSMART(hw.Disks)
 	return hw, nil
 }
-

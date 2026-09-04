@@ -21,11 +21,11 @@ type smartctlOutput struct {
 		Current int `json:"current"`
 	} `json:"temperature"`
 	NVMeSmartHealthInformationLog struct {
-		AvailableSpare          int   `json:"available_spare"`
-		PercentageUsed          int   `json:"percentage_used"`
-		MediaErrors             int64 `json:"media_errors"`
-		CriticalWarning         int   `json:"critical_warning"`
-		UnsafeShutdowns         int64 `json:"unsafe_shutdowns"`
+		AvailableSpare  int   `json:"available_spare"`
+		PercentageUsed  int   `json:"percentage_used"`
+		MediaErrors     int64 `json:"media_errors"`
+		CriticalWarning int   `json:"critical_warning"`
+		UnsafeShutdowns int64 `json:"unsafe_shutdowns"`
 	} `json:"nvme_smart_health_information_log"`
 	ATASmartAttributes struct {
 		Table []struct {
@@ -91,11 +91,11 @@ func smartQuery(dev string) (protocol.SmartHealth, bool) {
 		return protocol.SmartHealth{}, false
 	}
 	h := protocol.SmartHealth{
-		DiskSerial:         s.SerialNumber,
-		Model:              s.ModelName,
-		OverallHealth:      healthString(s),
-		PowerOnHours:       s.PowerOnTime.Hours,
-		TemperatureC:       s.Temperature.Current,
+		DiskSerial:          s.SerialNumber,
+		Model:               s.ModelName,
+		OverallHealth:       healthString(s),
+		PowerOnHours:        s.PowerOnTime.Hours,
+		TemperatureC:        s.Temperature.Current,
 		PercentLifetimeUsed: s.NVMeSmartHealthInformationLog.PercentageUsed,
 	}
 	for _, attr := range s.ATASmartAttributes.Table {

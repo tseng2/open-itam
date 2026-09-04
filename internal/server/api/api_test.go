@@ -21,8 +21,8 @@ func setup(t *testing.T) *Handler {
 	}
 	t.Cleanup(func() { s.Close() })
 	return NewHandler(s, Config{
-		InstallToken:       "install-secret",
-		AdminToken:         "admin-secret",
+		InstallToken:        "install-secret",
+		AdminToken:          "admin-secret",
 		DefaultHeartbeatSec: 600,
 		DefaultFullSec:      3600,
 	})
@@ -203,6 +203,145 @@ func TestIngestValidatesEnvelope(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func postFull(t *testing.T, h http.Handler, token string, hw protocol.Hardware) {
+	t.Helper()
+	full := protocol.FullPayload{
+		HeartbeatPayload: protocol.HeartbeatPayload{Hostname: "X", OS: protocol.OSInfo{Name: "Win"}},
+		Hardware:         hw,
+	}
+	p, _ := json.Marshal(full)
+	env, _ := json.Marshal(protocol.Envelope{
+		DeviceID: "dev-001", ReportType: protocol.ReportTypeFull,
+		ReportedAt: time.Now(), Payload: p,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest", strings.NewReader(string(env)))
+	req.Header.Set("Authorization", "Bearer "+token)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("full ingest failed: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDiffEngineOnFullReports(t *testing.T) {
+	h := setup(t)
+	token := register(t, h, "dev-001")
+
+	hw1 := protocol.Hardware{Brand: "Dell", Model: "M1", Serial: "SN1",
+		Disks: []protocol.Disk{{Serial: "D1", Model: "SSD"}},
+		SMART: []protocol.SmartHealth{{DiskSerial: "D1", Model: "SSD", OverallHealth: "PASSED"}},
+	}
+	postFull(t, h, token, hw1)
+
+	// 改序列号 + 磁盘健康失败
+	hw2 := hw1
+	hw2.Disks = []protocol.Disk{{Serial: "D2", Model: "SSD"}}
+	hw2.SMART = []protocol.SmartHealth{{DiskSerial: "D2", Model: "SSD", OverallHealth: "FAILED"}}
+	postFull(t, h, token, hw2)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/changes", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	h.ServeHTTP(rec, req)
+	var resp struct {
+		Events []store.ChangeEvent `json:"events"`
+	}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if len(resp.Events) != 2 {
+		t.Fatalf("expected 2 events, got %+v", resp.Events)
+	}
+	kinds := map[string]bool{}
+	for _, e := range resp.Events {
+		kinds[e.Kind] = true
+	}
+	if !kinds["disk_serial_swapped"] || !kinds["smart_health_failed"] {
+		t.Fatalf("expected swap + smart fail, got %+v", kinds)
+	}
+
+	// ack 第一个
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/changes/1/ack", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ack failed: %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/changes", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	h.ServeHTTP(rec, req)
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if len(resp.Events) != 1 {
+		t.Fatalf("after ack expected 1 open event, got %+v", resp.Events)
+	}
+}
+
+func TestFirstFullReportIsBaseline(t *testing.T) {
+	h := setup(t)
+	token := register(t, h, "dev-001")
+	postFull(t, h, token, protocol.Hardware{Brand: "Dell", Serial: "SN1",
+		Disks: []protocol.Disk{{Serial: "D1"}},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/changes", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	h.ServeHTTP(rec, req)
+	var resp struct {
+		Events []store.ChangeEvent `json:"events"`
+	}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if len(resp.Events) != 0 {
+		t.Fatalf("first report must seed baseline without alerting: %+v", resp.Events)
+	}
+}
+
+func TestAckNotFoundAndBadID(t *testing.T) {
+	h := setup(t)
+	for _, path := range []string{"/api/v1/changes/999/ack", "/api/v1/changes/abc/ack"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Authorization", "Bearer admin-secret")
+		h.ServeHTTP(rec, req)
+		want := http.StatusNotFound
+		if path == "/api/v1/changes/abc/ack" {
+			want = http.StatusBadRequest
+		}
+		if rec.Code != want {
+			t.Fatalf("%s: expected %d, got %d", path, want, rec.Code)
+		}
+	}
+}
+
+func TestSmartTempStreak(t *testing.T) {
+	h := setup(t)
+	token := register(t, h, "dev-001")
+
+	hw := protocol.Hardware{Brand: "Dell", Serial: "SN1",
+		SMART: []protocol.SmartHealth{{DiskSerial: "D1", Model: "SSD", OverallHealth: "PASSED", TemperatureC: 70}},
+	}
+	postFull(t, h, token, hw)
+	postFull(t, h, token, hw)
+	postFull(t, h, token, hw)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/changes", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	h.ServeHTTP(rec, req)
+	var resp struct {
+		Events []store.ChangeEvent `json:"events"`
+	}
+	json.NewDecoder(rec.Body).Decode(&resp)
+	found := false
+	for _, e := range resp.Events {
+		if e.Kind == "smart_temp" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected temp alert after 3 hot readings: %+v", resp.Events)
 	}
 }
 

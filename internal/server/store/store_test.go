@@ -164,6 +164,66 @@ func TestListDevicesPaging(t *testing.T) {
 	}
 }
 
+func TestSnapshotRoundTrip(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, err := s.RegisterDevice(ctx, Device{DeviceID: "dev001"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetSnapshot(ctx, "dev001"); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if err := s.SaveSnapshot(ctx, Snapshot{DeviceID: "dev001", Payload: []byte(`{"hw":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSnapshot(ctx, Snapshot{DeviceID: "dev001", Payload: []byte(`{"hw":2}`)}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.GetSnapshot(ctx, "dev001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(snap.Payload) != `{"hw":2}` {
+		t.Fatalf("snapshot must be latest: %s", snap.Payload)
+	}
+}
+
+func TestChangeEventsLifecycle(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, err := s.RegisterDevice(ctx, Device{DeviceID: "dev001"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.SaveChangeEvent(ctx, ChangeEvent{
+		DeviceID: "dev001", Kind: "disk_count_changed", Severity: "warning",
+		Message: "磁盘数量变更 1→2", Detail: map[string]string{"before": "1", "after": "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _ := s.ListChangeEvents(ctx, false, 10, 0)
+	if len(events) != 1 || events[0].ID != id || events[0].Acked {
+		t.Fatalf("expected 1 open event: %+v", events)
+	}
+	if events[0].Detail["after"] != "2" {
+		t.Fatalf("detail not preserved: %+v", events[0].Detail)
+	}
+	if err := s.AckChangeEvent(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	open, _ := s.ListChangeEvents(ctx, false, 10, 0)
+	if len(open) != 0 {
+		t.Fatalf("acked event must not appear in open list: %+v", open)
+	}
+	all, _ := s.ListChangeEvents(ctx, true, 10, 0)
+	if len(all) != 1 || !all[0].Acked {
+		t.Fatalf("acked event must appear in all list: %+v", all)
+	}
+	if err := s.AckChangeEvent(ctx, 9999); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound ack unknown: %v", err)
+	}
+}
+
 func TestListDevices(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

@@ -423,6 +423,19 @@ sequenceDiagram
 
 原则：**凡是带"管理"性质的入口一律仅内网**；公网只放"机器对机器"的 ingest 通道 + "员工自助"通道。公网上拿不到管理功能，攻击面只剩 ingest（本身有设备 token + 安装令牌双重把关）。
 
+### 8.4 USB 移动存储管控（usbguard）
+
+**策略矩阵**：
+
+| 设备类别 | 默认策略 | 实现 |
+|---|---|---|
+| U盘/移动硬盘（USB Storage） | 按服务端策略：off / audit / read-only / block | 服务策略键 `USBSTOR Start=4` + `RemovableStorageDevices` 策略 |
+| 手机便携存储（MTP/WPD） | 随 USB Storage 策略 | 禁 WPD 类 + wpdmtp |
+| 鼠标/键盘/无线 nano 接收器 | 永远放行 | HID 类不动 |
+| 无线传屏盒子 | 按 VID/PID 白名单放行 | Device Installation Restrictions |
+
+**联动**：策略走 `agent/config` 下发的 `usb_policy` 字段；**移动介质插拔事件独立进变更中心的安全审计流**（与硬件变更白名单分离）；macOS 侧仅审计+企微预警，阻断需 MDM。
+
 ---
 
 ## 9. macOS 说明（47 台+，占比提升，优先级上调）

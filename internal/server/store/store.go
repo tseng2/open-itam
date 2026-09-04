@@ -24,12 +24,29 @@ type Device struct {
 }
 
 type Report struct {
-	ID           int64     `json:"id"`
-	DeviceID     string    `json:"device_id"`
-	ReportType   string    `json:"report_type"`
-	Payload      json.RawMessage `json:"payload"`
-	ReportedAt   time.Time `json:"reported_at"`
-	ReceivedAt   time.Time `json:"received_at"`
+	ID         int64           `json:"id"`
+	DeviceID   string          `json:"device_id"`
+	ReportType string          `json:"report_type"`
+	Payload    json.RawMessage `json:"payload"`
+	ReportedAt time.Time       `json:"reported_at"`
+	ReceivedAt time.Time       `json:"received_at"`
+}
+
+type Snapshot struct {
+	DeviceID  string
+	Payload   json.RawMessage
+	UpdatedAt time.Time
+}
+
+type ChangeEvent struct {
+	ID        int64             `json:"id"`
+	DeviceID  string            `json:"device_id"`
+	Kind      string            `json:"kind"`
+	Severity  string            `json:"severity"`
+	Message   string            `json:"message"`
+	Detail    map[string]string `json:"detail,omitempty"`
+	Acked     bool              `json:"acked"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 type Store interface {
@@ -40,5 +57,10 @@ type Store interface {
 	GetDevice(ctx context.Context, deviceID string) (Device, error)
 	ListDevices(ctx context.Context, limit, offset int) ([]Device, error)
 	ListReports(ctx context.Context, deviceID string, limit, offset int) ([]Report, error)
+	GetSnapshot(ctx context.Context, deviceID string) (Snapshot, error)
+	SaveSnapshot(ctx context.Context, s Snapshot) error
+	SaveChangeEvent(ctx context.Context, e ChangeEvent) (int64, error)
+	ListChangeEvents(ctx context.Context, includeAcked bool, limit, offset int) ([]ChangeEvent, error)
+	AckChangeEvent(ctx context.Context, id int64) error
 	Close() error
 }

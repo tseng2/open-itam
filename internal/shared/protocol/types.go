@@ -41,19 +41,19 @@ func (e *ValidationError) Error() string {
 }
 
 type HeartbeatPayload struct {
-	Hostname  string     `json:"hostname"`
-	OS        OSInfo     `json:"os"`
-	Logon     LogonInfo  `json:"logon"`
-	BootTime  time.Time  `json:"boot_time"`
-	UptimeSec int64      `json:"uptime_sec"`
-	Network   Network    `json:"network"`
+	Hostname  string    `json:"hostname"`
+	OS        OSInfo    `json:"os"`
+	Logon     LogonInfo `json:"logon"`
+	BootTime  time.Time `json:"boot_time"`
+	UptimeSec int64     `json:"uptime_sec"`
+	Network   Network   `json:"network"`
 }
 
 type LogonInfo struct {
-	User     string    `json:"logon_user"`
-	Domain   string    `json:"logon_domain"`
-	Type     string    `json:"logon_type"`
-	LogonAt  time.Time `json:"logon_at"`
+	User    string    `json:"logon_user"`
+	Domain  string    `json:"logon_domain"`
+	Type    string    `json:"logon_type"`
+	LogonAt time.Time `json:"logon_at"`
 }
 
 const (
@@ -164,9 +164,9 @@ type RegisterResponse struct {
 }
 
 type IngestResponse struct {
-	Code            int    `json:"code"`
-	Message         string `json:"message"`
-	ServerTime      string `json:"server_time"`
-	NextHeartbeatSec int   `json:"next_heartbeat_sec"`
+	Code             int    `json:"code"`
+	Message          string `json:"message"`
+	ServerTime       string `json:"server_time"`
+	NextHeartbeatSec int    `json:"next_heartbeat_sec"`
 	NextFullSec      int    `json:"next_full_sec"`
 }

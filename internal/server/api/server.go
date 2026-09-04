@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"itagent/internal/server/alert"
 	"itagent/internal/server/store"
 	"itagent/internal/shared/protocol"
 )
@@ -33,6 +35,8 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.Handle("GET /api/v1/devices", h.admin(h.handleListDevices))
 	h.mux.Handle("GET /api/v1/devices/{id}", h.admin(h.handleGetDevice))
 	h.mux.Handle("GET /api/v1/devices/{id}/history", h.admin(h.handleDeviceHistory))
+	h.mux.Handle("GET /api/v1/changes", h.admin(h.handleListChanges))
+	h.mux.Handle("POST /api/v1/changes/{id}/ack", h.admin(h.handleAckChange))
 	return h
 }
 
@@ -113,6 +117,9 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	if env.ReportType == protocol.ReportTypeFull {
+		h.processFullReport(r, env)
+	}
 	if _, err := h.store.SaveReport(r.Context(), store.Report{
 		DeviceID: env.DeviceID, ReportType: env.ReportType,
 		Payload: env.Payload, ReportedAt: env.ReportedAt,
@@ -136,7 +143,7 @@ func (h *Handler) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"code":                0,
+		"code":                   0,
 		"heartbeat_interval_sec": h.cfg.DefaultHeartbeatSec,
 		"full_interval_sec":      h.cfg.DefaultFullSec,
 	})
@@ -173,6 +180,99 @@ func (h *Handler) handleDeviceHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "reports": reports})
+}
+
+func (h *Handler) processFullReport(r *http.Request, env protocol.Envelope) {
+	ctx := r.Context()
+	var full protocol.FullPayload
+	if err := json.Unmarshal(env.Payload, &full); err != nil {
+		return
+	}
+	prevSnap, err := h.store.GetSnapshot(ctx, env.DeviceID)
+	if err == nil {
+		var prev protocol.FullPayload
+		if json.Unmarshal(prevSnap.Payload, &prev) == nil {
+			h.saveEvents(ctx, env.DeviceID, alert.DiffHardware(env.DeviceID, prev.Hardware, full.Hardware))
+		}
+	}
+	streaks := h.recentTempStreaks(ctx, env.DeviceID, full.Hardware.SMART)
+	h.saveEvents(ctx, env.DeviceID, alert.CheckSMARTWithStreak(env.DeviceID, full.Hardware.SMART, streaks))
+
+	snapPayload, _ := json.Marshal(full)
+	_ = h.store.SaveSnapshot(ctx, store.Snapshot{DeviceID: env.DeviceID, Payload: snapPayload})
+}
+
+func (h *Handler) saveEvents(ctx context.Context, deviceID string, events []alert.Event) {
+	for _, e := range events {
+		_, _ = h.store.SaveChangeEvent(ctx, store.ChangeEvent{
+			DeviceID: deviceID, Kind: e.Kind, Severity: e.Severity,
+			Message: e.Message, Detail: e.Detail,
+		})
+	}
+}
+
+func (h *Handler) recentTempStreaks(ctx context.Context, deviceID string, smart []protocol.SmartHealth) map[string]int {
+	const threshold = 60
+	streaks := map[string]int{}
+	for _, s := range smart {
+		if s.TemperatureC >= threshold {
+			streaks[s.DiskSerial] = 1
+		}
+	}
+	if len(streaks) == 0 {
+		return nil
+	}
+	reports, err := h.store.ListReports(ctx, deviceID, 5, 0)
+	if err != nil {
+		return streaks
+	}
+	for _, rep := range reports {
+		if rep.ReportType != protocol.ReportTypeFull {
+			continue
+		}
+		var prev protocol.FullPayload
+		if json.Unmarshal(rep.Payload, &prev) != nil {
+			continue
+		}
+		prevTemp := map[string]int{}
+		for _, s := range prev.Hardware.SMART {
+			prevTemp[s.DiskSerial] = s.TemperatureC
+		}
+		for serial := range streaks {
+			if prevTemp[serial] >= threshold {
+				streaks[serial]++
+			}
+		}
+	}
+	return streaks
+}
+
+func (h *Handler) handleListChanges(w http.ResponseWriter, r *http.Request) {
+	limit, offset := paging(r)
+	includeAcked := r.URL.Query().Get("all") == "true"
+	events, err := h.store.ListChangeEvents(r.Context(), includeAcked, limit, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 500, "message": "query failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "events": events})
+}
+
+func (h *Handler) handleAckChange(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 400, "message": "invalid id"})
+		return
+	}
+	if err := h.store.AckChangeEvent(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"code": 404, "message": "event not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 500, "message": "ack failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "message": "acked"})
 }
 
 func paging(r *http.Request) (limit, offset int) {
