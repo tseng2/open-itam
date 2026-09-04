@@ -1,5 +1,7 @@
 data/
 temp/
+web/node_modules/
+internal/server/ui/dist/
 configs/agent.local.json
 configs/server.local.json
 *.db

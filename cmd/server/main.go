@@ -10,6 +10,7 @@ import (
 
 	"itagent/internal/server/api"
 	"itagent/internal/server/store"
+	"itagent/internal/server/ui"
 )
 
 type serverConfig struct {
@@ -65,8 +66,9 @@ func main() {
 		DefaultFullSec:      cfg.DefaultFullSec,
 	})
 
+	root := ui.Wrap(h)
 	log.Printf("itagent server listening on %s, db=%s", cfg.Listen, cfg.DBPath)
-	if err := http.ListenAndServe(cfg.Listen, h); err != nil {
+	if err := http.ListenAndServe(cfg.Listen, root); err != nil {
 		log.Fatal(err)
 	}
 }
