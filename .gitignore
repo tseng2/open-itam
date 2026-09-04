@@ -1,5 +1,7 @@
 data/
 temp/
+configs/agent.local.json
+configs/server.local.json
 *.db
 *.db-wal
 *.db-shm
