@@ -1,0 +1,14 @@
+{
+  "server_primary": "http://127.0.0.1:8443",
+  "server_backup": "",
+  "install_token": "change-me-install-token",
+  "device_id": "895a66bc8bcaad56",
+  "device_token": "8abae286c94911ea53bb61518d0a32fd17f33487ce04d4a4",
+  "agent_version": "0.1.0",
+  "heartbeat_interval_sec": 600,
+  "full_interval_sec": 3600,
+  "spool_scan_sec": 30,
+  "failover_probe_sec": 1800,
+  "spool_dir": "data/spool",
+  "using_backup": false
+}

@@ -1,0 +1,172 @@
+package protocol
+
+import (
+	"encoding/json"
+	"time"
+)
+
+const (
+	ReportTypeHeartbeat = "heartbeat"
+	ReportTypeFull      = "full"
+)
+
+type Envelope struct {
+	DeviceID     string          `json:"device_id"`
+	AgentVersion string          `json:"agent_version"`
+	ReportType   string          `json:"report_type"`
+	ReportedAt   time.Time       `json:"reported_at"`
+	Payload      json.RawMessage `json:"payload"`
+}
+
+func (e *Envelope) Validate() error {
+	if e.DeviceID == "" {
+		return &ValidationError{Field: "device_id", Msg: "required"}
+	}
+	if e.ReportType != ReportTypeHeartbeat && e.ReportType != ReportTypeFull {
+		return &ValidationError{Field: "report_type", Msg: "must be heartbeat or full"}
+	}
+	if e.ReportedAt.IsZero() {
+		return &ValidationError{Field: "reported_at", Msg: "required"}
+	}
+	return nil
+}
+
+type ValidationError struct {
+	Field string
+	Msg   string
+}
+
+func (e *ValidationError) Error() string {
+	return "invalid field " + e.Field + ": " + e.Msg
+}
+
+type HeartbeatPayload struct {
+	Hostname  string     `json:"hostname"`
+	OS        OSInfo     `json:"os"`
+	Logon     LogonInfo  `json:"logon"`
+	BootTime  time.Time  `json:"boot_time"`
+	UptimeSec int64      `json:"uptime_sec"`
+	Network   Network    `json:"network"`
+}
+
+type LogonInfo struct {
+	User     string    `json:"logon_user"`
+	Domain   string    `json:"logon_domain"`
+	Type     string    `json:"logon_type"`
+	LogonAt  time.Time `json:"logon_at"`
+}
+
+const (
+	LogonTypeAD    = "ad"
+	LogonTypeLocal = "local"
+)
+
+type OSInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Build   string `json:"build"`
+}
+
+type Network struct {
+	Interfaces []NetInterface `json:"interfaces"`
+	PublicIP   string         `json:"public_ip"`
+}
+
+type NetInterface struct {
+	Name string   `json:"name"`
+	MAC  string   `json:"mac"`
+	IPs  []string `json:"ips"`
+	IsUp bool     `json:"is_up"`
+}
+
+type FullPayload struct {
+	HeartbeatPayload
+	Hardware Hardware   `json:"hardware"`
+	Software []Software `json:"software"`
+}
+
+type Hardware struct {
+	Brand         string         `json:"brand"`
+	Model         string         `json:"model"`
+	Serial        string         `json:"serial"`
+	BIOSSerial    string         `json:"bios_serial"`
+	CPU           []CPU          `json:"cpu"`
+	MemoryTotalMB int64          `json:"memory_total_mb"`
+	MemoryModules []MemoryModule `json:"memory_modules"`
+	Disks         []Disk         `json:"disks"`
+	GPUs          []GPU          `json:"gpus"`
+	NICs          []NIC          `json:"nics"`
+	SMART         []SmartHealth  `json:"disk_smart_health"`
+}
+
+type CPU struct {
+	Model   string `json:"model"`
+	Cores   int    `json:"cores"`
+	Threads int    `json:"threads"`
+}
+
+type MemoryModule struct {
+	Slot     string `json:"slot"`
+	SizeMB   int64  `json:"size_mb"`
+	Type     string `json:"type"`
+	SpeedMHz int    `json:"speed_mhz"`
+	Serial   string `json:"serial"`
+}
+
+type Disk struct {
+	Model     string `json:"model"`
+	SizeGB    int64  `json:"size_gb"`
+	Type      string `json:"type"`
+	Serial    string `json:"serial"`
+	Removable bool   `json:"removable"`
+}
+
+type GPU struct {
+	Model  string `json:"model"`
+	VRAMMB int64  `json:"vram_mb"`
+}
+
+type NIC struct {
+	Name      string `json:"name"`
+	MAC       string `json:"mac"`
+	SpeedMbps int    `json:"speed_mbps"`
+}
+
+type SmartHealth struct {
+	DiskSerial          string `json:"disk_serial"`
+	Model               string `json:"model"`
+	OverallHealth       string `json:"overall_health"`
+	ReallocatedSectors  int64  `json:"reallocated_sectors"`
+	PendingSectors      int64  `json:"pending_sectors"`
+	PowerOnHours        int64  `json:"power_on_hours"`
+	TemperatureC        int    `json:"temperature_c"`
+	PercentLifetimeUsed int    `json:"percent_lifetime_used"`
+}
+
+type Software struct {
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	InstallPath string `json:"install_path"`
+}
+
+type RegisterRequest struct {
+	DeviceID     string `json:"device_id"`
+	Hostname     string `json:"hostname"`
+	OS           string `json:"os"`
+	AgentVersion string `json:"agent_version"`
+	InstallToken string `json:"install_token"`
+}
+
+type RegisterResponse struct {
+	Code        int    `json:"code"`
+	Message     string `json:"message"`
+	DeviceToken string `json:"device_token,omitempty"`
+}
+
+type IngestResponse struct {
+	Code            int    `json:"code"`
+	Message         string `json:"message"`
+	ServerTime      string `json:"server_time"`
+	NextHeartbeatSec int   `json:"next_heartbeat_sec"`
+	NextFullSec      int    `json:"next_full_sec"`
+}
