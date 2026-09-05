@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"context"
+	"strings"
 
 	"itagent/internal/agent/collector"
 	"itagent/internal/agent/config"
@@ -62,12 +63,27 @@ func (s *Server) Handle(req Request) Response {
 func flattenIPs(network protocol.Network) []string {
 	var out []string
 	for _, n := range network.Interfaces {
-		if !n.IsUp {
+		if !n.IsUp || isVirtualNIC(n.Name) {
 			continue
 		}
 		for _, ip := range n.IPs {
-			out = append(out, ip)
+			if strings.HasPrefix(ip, "fe80") || strings.HasPrefix(ip, "::1") {
+				continue
+			}
+			out = append(out, strings.SplitN(ip, "/", 2)[0])
 		}
 	}
 	return out
+}
+
+var virtualNICKeywords = []string{"vmware", "virtualbox", "hyper-v", "vethernet", "loopback", "wsl", "bluetooth", "zerotier", "tailscale"}
+
+func isVirtualNIC(name string) bool {
+	l := strings.ToLower(name)
+	for _, k := range virtualNICKeywords {
+		if strings.Contains(l, k) {
+			return true
+		}
+	}
+	return false
 }

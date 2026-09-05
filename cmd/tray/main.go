@@ -39,13 +39,20 @@ func main() {
 }
 
 func onReady() {
+	systray.SetIcon(iconData)
 	systray.SetTitle(title)
 	systray.SetTooltip("IT Agent 运行中")
-	systray.SetTooltip("左键显示状态，右键退出")
 
 	status := systray.AddMenuItem("查询状态…", "查看 IP/版本")
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("退出 Agent", "需要管理员密码")
+
+	go func() {
+		for {
+			refreshTooltip()
+			time.Sleep(5 * time.Minute)
+		}
+	}()
 
 	go func() {
 		for range status.ClickedCh {
@@ -62,22 +69,37 @@ func onReady() {
 	}()
 }
 
-func showStatus() {
+func queryStatus() (string, error) {
 	conn, err := trayipc.Dial()
 	if err != nil {
-		systray.SetTooltip(fmt.Sprintf("无法连接 core-agent: %v", err))
-		return
+		return "", err
 	}
+	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	resp, err := trayipc.Call(conn, trayipc.Request{Op: trayipc.OpStatus}, 30*time.Second)
 	if err != nil {
-		systray.SetTooltip(fmt.Sprintf("查询失败: %v", err))
+		return "", err
+	}
+	return fmt.Sprintf("%s\nIP: %s\n运行: %ds\n待传: %d 条",
+		resp.Hostname, strings.Join(resp.InternalIPs, ", "), resp.UptimeSec, resp.SpoolPending), nil
+}
+
+func refreshTooltip() {
+	msg, err := queryStatus()
+	if err != nil {
+		systray.SetTooltip("IT Agent（core-agent 未连接）")
 		return
 	}
-	lips := strings.Join(resp.InternalIPs, ", ")
-	msg := fmt.Sprintf("主机: %s\n内网: %s\nUptime: %ds\nSpool: %d 条待传",
-		resp.Hostname, lips, resp.UptimeSec, resp.SpoolPending)
-	systray.SetTooltip(msg)
+	systray.SetTooltip("IT Agent 运行中\n" + msg)
+}
+
+func showStatus() {
+	msg, err := queryStatus()
+	if err != nil {
+		showMessage("IT Agent 状态", "查询失败: "+err.Error())
+		return
+	}
+	systray.SetTooltip("IT Agent 运行中\n" + msg)
 	showMessage("IT Agent 状态", msg)
 }
 

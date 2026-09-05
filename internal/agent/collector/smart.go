@@ -2,7 +2,9 @@ package collector
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"itagent/internal/shared/protocol"
@@ -44,25 +46,47 @@ type smartctlOutput struct {
 	} `json:"device"`
 }
 
+// 优先用打包附带的 smartctl.exe（tools 目录），其次 PATH，都没有则 WMI 兜底
+func findSmartctl() string {
+	self, err := os.Executable()
+	if err == nil {
+		p := filepath.Join(filepath.Dir(self), "..", "tools", "smartctl.exe")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if p, err := exec.LookPath("smartctl"); err == nil {
+		return p
+	}
+	return ""
+}
+
 func collectSMART(disks []protocol.Disk) []protocol.SmartHealth {
-	if _, err := exec.LookPath("smartctl"); err != nil {
-		return nil
+	bin := findSmartctl()
+	if bin == "" {
+		return collectSMARTWMI(disks)
 	}
 	var out []protocol.SmartHealth
-	devices := smartScanDevices()
+	devices := smartScanDevices(bin)
 	if len(devices) == 0 {
-		return nil
+		return collectSMARTWMI(disks)
 	}
+	seen := map[string]bool{}
 	for _, dev := range devices {
-		if h, ok := smartQuery(dev); ok {
+		if h, ok := smartQuery(bin, dev); ok {
+			key := h.DiskSerial + "|" + h.Model
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			out = append(out, h)
 		}
 	}
 	return out
 }
 
-func smartScanDevices() []string {
-	out, err := exec.Command("smartctl", "--scan", "-j").Output()
+func smartScanDevices(bin string) []string {
+	out, err := exec.Command(bin, "--scan", "-j").Output()
 	if err != nil {
 		return nil
 	}
@@ -81,8 +105,8 @@ func smartScanDevices() []string {
 	return devs
 }
 
-func smartQuery(dev string) (protocol.SmartHealth, bool) {
-	out, err := exec.Command("smartctl", "-a", "-j", dev).Output()
+func smartQuery(bin, dev string) (protocol.SmartHealth, bool) {
+	out, err := exec.Command(bin, "-a", "-j", dev).Output()
 	if err != nil && len(out) == 0 {
 		return protocol.SmartHealth{}, false
 	}
