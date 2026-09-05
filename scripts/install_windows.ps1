@@ -31,7 +31,7 @@ Copy-Item "$scriptDir\configs\agent.json" "$InstallDir\configs\agent.json" -Forc
 $goPath = "C:\Program Files\Go\bin\go.exe"
 if (Test-Path $goPath) {
     $env:PASSWORD = $Password
-    $hash = & $goPath run "$scriptDir\tools\hash.go" 2>$null
+    $hash = & $goPath run "$scriptDir\tools" hash $Password 2>$null
 } else {
     $hash = $Password  # 回退：明文（不安全，只试用）
     Write-Host "WARN: 生产环境请确保 Go 环境可用" -ForegroundColor Yellow

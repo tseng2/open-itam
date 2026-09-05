@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	agentipc "itagent/internal/agent/ipc"
 	"itagent/internal/agent/collector"
 	"itagent/internal/agent/config"
 	"itagent/internal/agent/identity"
+	"itagent/internal/agent/ipc"
 	"itagent/internal/agent/reporter"
 	"itagent/internal/shared/protocol"
 )
@@ -69,111 +69,109 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
+	// 心跳与全量
 	heartbeatDue := time.Now()
 	fullDue := time.Now().Add(10 * time.Second)
-
-	log.Printf("core-agent %s started: device=%s hb=%ds full=%ds", agentVersion, cfg.DeviceID, cfg.HeartbeatIntervalSec, cfg.FullIntervalSec)
-
-	flush := func() {
-		for {
-			items, err := spool.Pending()
-			if err != nil || len(items) == 0 {
-				break
-			}
-			name := items[0]
-			data, err := spool.Read(name)
-			if err != nil {
-				spool.Delete(name)
-				continue
-			}
-			var env protocol.Envelope
-			if err := json.Unmarshal(data, &env); err != nil {
-				spool.Delete(name)
-				continue
-			}
-			resp, err := u.Upload(env)
-			if err != nil {
-				d := backoff.Next()
-				log.Printf("upload %s failed (%v); retry in %s", name, err, d)
-				time.Sleep(d)
-				continue
-			}
-			if cfg.ApplyServerOverride(resp.NextHeartbeatSec, resp.NextFullSec) {
-				log.Printf("server overrode intervals: hb=%ds full=%ds", cfg.HeartbeatIntervalSec, cfg.FullIntervalSec)
-			}
-			u.MaybeProbePrimary(time.Now())
-			backoff.Reset()
-			spool.Delete(name)
-		}
-		cfg.UsingBackup = u.UsingBackup()
-		_ = config.Save(*configPath, cfg)
-	}
-
-	enqueue := func(reportType string) {
-		var payload any
-		hb := col.Heartbeat()
-		if reportType == protocol.ReportTypeFull {
-			payload = col.Full()
-		} else {
-			payload = hb
-		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			log.Printf("marshal payload: %v", err)
-			return
-		}
-		env := protocol.Envelope{
-			DeviceID: cfg.DeviceID, AgentVersion: agentVersion,
-			ReportType: reportType, ReportedAt: time.Now(),
-			Payload: raw,
-		}
-		envRaw, err := json.Marshal(env)
-		if err != nil {
-			log.Printf("marshal envelope: %v", err)
-			return
-		}
-		if _, err := spool.Enqueue(envRaw); err != nil {
-			log.Printf("spool enqueue: %v", err)
-		}
-		flush()
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var ipcSrv *agentipc.Server
+	var ipcSrv *ipc.Server
 	if runtime.GOOS == "windows" {
-		ipcSrv = agentipc.NewServer(cfg, col, spool, u)
+		ipcSrv = ipc.NewServer(cfg, col, spool, u)
 		go func() {
 			if err := ipcSrv.Serve(ctx); err != nil {
-				log.Printf("ipc serve: %v", err)
+				log.Printf("ipc serve error: %v", err)
 			}
 		}()
+		log.Printf("IPC server listening on pipe")
 	}
 
-	ticker := time.NewTicker(time.Duration(cfg.SpoolScanSec) * time.Second)
-	defer ticker.Stop()
+	log.Printf("core-agent %s started: device=%s hb=%ds full=%ds", agentVersion, cfg.DeviceID, cfg.HeartbeatIntervalSec, cfg.FullIntervalSec)
 
 	for {
 		select {
 		case <-sig:
-			log.Print("shutting down")
+			log.Printf("shutdown requested, flushing spool...")
 			return
-		case <-ticker.C:
 		case <-ipcSrv.QuitChan():
-			log.Print("ipc quit received")
+			log.Printf("IPC quit requested")
 			return
+		default:
 		}
 
 		now := time.Now()
+
 		if now.After(heartbeatDue) {
-			enqueue(protocol.ReportTypeHeartbeat)
 			heartbeatDue = now.Add(time.Duration(cfg.HeartbeatIntervalSec) * time.Second)
+			enqueue(spool, cfg, col, protocol.ReportTypeHeartbeat)
 		}
 		if now.After(fullDue) {
-			enqueue(protocol.ReportTypeFull)
 			fullDue = now.Add(time.Duration(cfg.FullIntervalSec) * time.Second)
+			enqueue(spool, cfg, col, protocol.ReportTypeFull)
 		}
-		flush()
+		// 扫描 spool，发送队列
+		flush := false
+		spoolItems, _ := spool.Pending()
+		if len(spoolItems) > 0 {
+			for _, item := range spoolItems {
+				raw, err := spool.Read(item)
+				if err != nil {
+					spool.Delete(item)
+					continue
+				}
+				var env protocol.Envelope
+				if err := json.Unmarshal(raw, &env); err != nil {
+					spool.Delete(item)
+					continue
+				}
+				resp, err := u.Upload(env)
+				if err != nil {
+					log.Printf("upload failed: %v", err)
+					d := backoff.Next()
+					time.Sleep(d)
+					break
+				}
+				spool.Delete(item)
+				flush = true
+				if cfg.ApplyServerOverride(resp.NextHeartbeatSec, resp.NextFullSec) {
+					log.Printf("interval override: hb=%ds full=%ds", cfg.HeartbeatIntervalSec, cfg.FullIntervalSec)
+				}
+			}
+			if !flush {
+				log.Printf("offline, sleeping")
+			}
+		}
+		u.MaybeProbePrimary(now)
+		time.Sleep(time.Duration(cfg.SpoolScanSec) * time.Second)
 	}
+}
+
+func enqueue(spool *reporter.Spool, cfg config.Config, col *collector.Collector, reportType string) {
+	hb := col.Heartbeat()
+	var payload []byte
+	var err error
+
+	if reportType == protocol.ReportTypeFull {
+		payload, _ = json.Marshal(col.Full())
+	} else {
+		payload, err = json.Marshal(hb)
+	}
+	if err != nil {
+		log.Printf("marshal payload: %v", err)
+		return
+	}
+
+	env := protocol.Envelope{
+		DeviceID:    cfg.DeviceID,
+		AgentVersion: cfg.AgentVersion,
+		ReportType:  reportType,
+		ReportedAt:  time.Now(),
+		Payload:     payload,
+	}
+	raw, _ := json.Marshal(env)
+	if _, err := spool.Enqueue(raw); err != nil {
+		log.Printf("spool error: %v", err)
+	}
+	log.Printf("spool enqueued %s report", reportType)
 }
