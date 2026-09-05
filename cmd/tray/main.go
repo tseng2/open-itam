@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/getlantern/systray"
 
@@ -73,8 +75,17 @@ func showStatus() {
 		return
 	}
 	lips := strings.Join(resp.InternalIPs, ", ")
-	systray.SetTooltip(fmt.Sprintf("主机: %s\n内网: %s\n公网: %s\nUptime: %ds\nSpool: %d 条待传",
-		resp.Hostname, lips, resp.PublicIP, resp.UptimeSec, resp.SpoolPending))
+	msg := fmt.Sprintf("主机: %s\n内网: %s\nUptime: %ds\nSpool: %d 条待传",
+		resp.Hostname, lips, resp.UptimeSec, resp.SpoolPending)
+	systray.SetTooltip(msg)
+	showMessage("IT Agent 状态", msg)
+}
+
+func showMessage(title, text string) {
+	t, _ := syscall.UTF16PtrFromString(title)
+	m, _ := syscall.UTF16PtrFromString(text)
+	syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW").Call(0,
+		uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0)
 }
 
 func tryQuit() bool {
