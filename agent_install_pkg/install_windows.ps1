@@ -21,7 +21,7 @@ New-Item -ItemType Directory -Force "$InstallDir\bin" | Out-Null
 New-Item -ItemType Directory -Force "$InstallDir\configs" | Out-Null
 New-Item -ItemType Directory -Force "$InstallDir\tools" | Out-Null
 
-$scriptDir = Split-Path -Parent $PSScriptRoot
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 if (-not (Test-Path "$scriptDir\bin\core-agent.exe")) {
     Write-Host "ERROR: bin\core-agent.exe not found" -ForegroundColor Red
     exit 1
@@ -41,12 +41,9 @@ $agentCfg.server_primary = $Server
 $agentCfg.spool_dir = "$InstallDir\data\spool"
 $agentCfg | ConvertTo-Json -Depth 10 | Set-Content "$InstallDir\configs\agent.json"
 
-sc.exe stop ITAgentService 2>$null | Out-Null
-Start-Sleep -Seconds 2
 sc.exe delete ITAgentService 2>$null | Out-Null
-Start-Sleep -Seconds 2
-sc.exe create ITAgentService binPath= "`"$InstallDir\bin\core-agent.exe`" -config `"$InstallDir\configs\agent.json`"" start= auto | Out-Null
-sc.exe failure ITAgentService reset= 60 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+sc.exe create ITAgentService binPath= "`"$InstallDir\bin\core-agent.exe`"" start= auto | Out-Null
+	sc.exe config ITAgentService obj= "NT AUTHORITY\System" 2>$null | Out-Null
 
 $action = New-ScheduledTaskAction -Execute "$InstallDir\bin\tray.exe"
 $trigger = New-ScheduledTaskTrigger -AtLogOn

@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -21,157 +20,106 @@ import (
 
 const agentVersion = "0.1.0"
 
-func main() {
-	configPath := flag.String("config", "configs/agent.json", "path to agent config")
-	flag.Parse()
+var (
+	cfgPathFlag = flag.String("config", "configs/agent.json", "path to agent config")
+	serviceFlag = flag.Bool("service", false, "run as windows service")
+)
 
-	cfg, err := config.Load(*configPath)
+func main() {
+	flag.Parse()
+	if tryRunAsService(*cfgPathFlag, *serviceFlag) {
+		return
+	}
+	runConsole(*cfgPathFlag)
+}
+
+func runConsole(cfgPath string) {
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { <-stop; close(done) }()
+	innerMain(cfgPath, done)
+}
+
+func innerMain(cfgPath string, done <-chan struct{}) {
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Printf("config: %v", err)
+		return
 	}
 	cfg.AgentVersion = agentVersion
 
 	col := collector.New()
-
 	if cfg.DeviceID == "" {
 		id, err := identity.DeviceID(identity.PlatformProbe())
 		if err != nil {
-			log.Fatalf("cannot derive device id: %v", err)
+			log.Printf("device id: %v", err)
+			return
 		}
 		cfg.DeviceID = id
-		if err := config.Save(*configPath, cfg); err != nil {
-			log.Fatalf("persist config: %v", err)
-		}
-		log.Printf("generated device_id=%s", cfg.DeviceID)
+		config.Save(cfgPath, cfg)
 	}
 
 	u := reporter.NewUploader(cfg.ServerPrimary, cfg.ServerBackup, cfg.DeviceID, cfg.DeviceToken, nil)
-	if cfg.UsingBackup {
-		log.Printf("resuming on backup server")
-	}
-
 	if cfg.DeviceToken == "" {
 		hb := col.Heartbeat()
-		token, err := u.Register(cfg.InstallToken, hb.Hostname, hb.OS.Name, agentVersion)
-		if err != nil {
-			log.Fatalf("register: %v", err)
+		tok, err := u.Register(cfg.InstallToken, hb.Hostname, hb.OS.Name, cfg.AgentVersion)
+		if err == nil {
+			cfg.DeviceToken = tok
+			config.Save(cfgPath, cfg)
+		} else {
+			log.Printf("register retry later: %v", err)
 		}
-		cfg.DeviceToken = token
-		if err := config.Save(*configPath, cfg); err != nil {
-			log.Fatalf("persist token: %v", err)
-		}
-		log.Printf("registered ok")
 	}
 
 	spool := reporter.NewSpool(cfg.SpoolDir)
-	backoff := reporter.NewBackoff(5*time.Second, 5*time.Minute)
+	ipcSrv := ipc.NewServer(cfg, col, spool, u)
+	go ipcSrv.Serve(context.Background())
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	log.Printf("ITAgent v%s dev=%s", agentVersion, cfg.DeviceID)
 
-	// 心跳与全量
-	heartbeatDue := time.Now()
-	fullDue := time.Now().Add(10 * time.Second)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var ipcSrv *ipc.Server
-	if runtime.GOOS == "windows" {
-		ipcSrv = ipc.NewServer(cfg, col, spool, u)
-		go func() {
-			if err := ipcSrv.Serve(ctx); err != nil {
-				log.Printf("ipc serve error: %v", err)
-			}
-		}()
-		log.Printf("IPC server listening on pipe")
-	}
-
-	log.Printf("core-agent %s started: device=%s hb=%ds full=%ds", agentVersion, cfg.DeviceID, cfg.HeartbeatIntervalSec, cfg.FullIntervalSec)
+	hb := time.Now()
+	full := time.Now().Add(15 * time.Second)
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
 
 	for {
 		select {
-		case <-sig:
-			log.Printf("shutdown requested, flushing spool...")
+		case <-done:
+			log.Printf("stopping")
 			return
-		case <-ipcSrv.QuitChan():
-			log.Printf("IPC quit requested")
-			return
-		default:
-		}
-
-		now := time.Now()
-
-		if now.After(heartbeatDue) {
-			heartbeatDue = now.Add(time.Duration(cfg.HeartbeatIntervalSec) * time.Second)
-			enqueue(spool, cfg, col, protocol.ReportTypeHeartbeat)
-		}
-		if now.After(fullDue) {
-			fullDue = now.Add(time.Duration(cfg.FullIntervalSec) * time.Second)
-			enqueue(spool, cfg, col, protocol.ReportTypeFull)
-		}
-		// 扫描 spool，发送队列
-		flush := false
-		spoolItems, _ := spool.Pending()
-		if len(spoolItems) > 0 {
-			for _, item := range spoolItems {
-				raw, err := spool.Read(item)
-				if err != nil {
-					spool.Delete(item)
-					continue
-				}
-				var env protocol.Envelope
-				if err := json.Unmarshal(raw, &env); err != nil {
-					spool.Delete(item)
-					continue
-				}
-				resp, err := u.Upload(env)
-				if err != nil {
-					log.Printf("upload failed: %v", err)
-					d := backoff.Next()
-					time.Sleep(d)
-					break
-				}
-				spool.Delete(item)
-				flush = true
-				if cfg.ApplyServerOverride(resp.NextHeartbeatSec, resp.NextFullSec) {
-					log.Printf("interval override: hb=%ds full=%ds", cfg.HeartbeatIntervalSec, cfg.FullIntervalSec)
-				}
+		case now := <-tick.C:
+			if now.After(hb) {
+				enqueue(spool, cfg, col, "heartbeat")
+				hb = now.Add(10 * time.Minute)
 			}
-			if !flush {
-				log.Printf("offline, sleeping")
+			if now.After(full) {
+				enqueue(spool, cfg, col, "full")
+				full = now.Add(time.Hour)
 			}
 		}
-		u.MaybeProbePrimary(now)
-		time.Sleep(time.Duration(cfg.SpoolScanSec) * time.Second)
 	}
 }
 
-func enqueue(spool *reporter.Spool, cfg config.Config, col *collector.Collector, reportType string) {
-	hb := col.Heartbeat()
+func enqueue(spool *reporter.Spool, cfg config.Config, col *collector.Collector, typ string) {
 	var payload []byte
-	var err error
-
-	if reportType == protocol.ReportTypeFull {
+	if typ == "full" {
 		payload, _ = json.Marshal(col.Full())
 	} else {
-		payload, err = json.Marshal(hb)
+		payload, _ = json.Marshal(col.Heartbeat())
 	}
-	if err != nil {
-		log.Printf("marshal payload: %v", err)
-		return
-	}
-
-	env := protocol.Envelope{
-		DeviceID:    cfg.DeviceID,
-		AgentVersion: cfg.AgentVersion,
-		ReportType:  reportType,
-		ReportedAt:  time.Now(),
-		Payload:     payload,
-	}
+	env := protocol.Envelope{DeviceID: cfg.DeviceID, AgentVersion: agentVersion, ReportType: typ, ReportedAt: time.Now(), Payload: payload}
 	raw, _ := json.Marshal(env)
-	if _, err := spool.Enqueue(raw); err != nil {
-		log.Printf("spool error: %v", err)
+	_, _ = spool.Enqueue(raw)
+
+	items, _ := spool.Pending()
+	for _, item := range items {
+		if d, err := spool.Read(item); err == nil {
+			var m protocol.Envelope
+			_ = json.Unmarshal(d, &m)
+			if resp, err := reporter.NewUploader(cfg.ServerPrimary, cfg.ServerBackup, cfg.DeviceID, cfg.DeviceToken, nil).Upload(m); err == nil && resp != nil {
+				spool.Delete(item)
+			}
+		}
 	}
-	log.Printf("spool enqueued %s report", reportType)
 }
