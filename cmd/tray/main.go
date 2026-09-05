@@ -3,9 +3,10 @@
 package main
 
 import (
-	"bufio"
+	_ "embed"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -22,10 +23,13 @@ const (
 	version = "0.1.0"
 )
 
+//go:embed icon.ico
+var iconData []byte
+
 var passwordHash atomic.Value
 
 func main() {
-	cfgPath := filepath.Join(filepath.Dir(os.Args[0]), "configs", "agent.password")
+	cfgPath := filepath.Join(filepath.Dir(os.Args[0]), "..", "configs", "agent.password")
 	if hash, err := os.ReadFile(cfgPath); err == nil {
 		passwordHash.Store(strings.TrimSpace(string(hash)))
 	}
@@ -62,8 +66,8 @@ func showStatus() {
 		systray.SetTooltip(fmt.Sprintf("无法连接 core-agent: %v", err))
 		return
 	}
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	resp, err := trayipc.Call(conn, trayipc.Request{Op: trayipc.OpStatus}, 5*time.Second)
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	resp, err := trayipc.Call(conn, trayipc.Request{Op: trayipc.OpStatus}, 30*time.Second)
 	if err != nil {
 		systray.SetTooltip(fmt.Sprintf("查询失败: %v", err))
 		return
@@ -79,12 +83,10 @@ func tryQuit() bool {
 		systray.SetTooltip("未设置退出密码，无法退出")
 		return false
 	}
-	fmt.Print("输入退出密码: ")
-	scan := bufio.NewScanner(os.Stdin)
-	if !scan.Scan() {
+	pwd, ok := promptPassword()
+	if !ok {
 		return false
 	}
-	pwd := strings.TrimSpace(scan.Text())
 	if !password.Verify(pwd, hash.(string)) {
 		systray.SetTooltip("密码错误，拒绝退出")
 		return false
@@ -97,3 +99,15 @@ func tryQuit() bool {
 }
 
 func onExit() {}
+
+// GUI 进程没有控制台，借用 PowerShell InputBox 弹密码框
+func promptPassword() (string, bool) {
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+		`Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::InputBox('请输入退出密码', 'IT Agent', '')`)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	pwd := strings.TrimSpace(string(out))
+	return pwd, pwd != ""
+}

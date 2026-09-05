@@ -32,8 +32,9 @@ Copy-Item "$scriptDir\bin\tray.exe" "$InstallDir\bin\tray.exe" -Force
 Copy-Item "$scriptDir\bin\agent-watchdog.exe" "$InstallDir\bin\agent-watchdog.exe" -Force
 Copy-Item "$scriptDir\tools\verify.exe" "$InstallDir\tools\verify.exe" -Force
 
-# Password hash (plain for now, tools generates)
-Set-Content -Path "$InstallDir\configs\agent.password" -Value $Password -Encoding UTF8
+# Argon2id hash for quit/uninstall password (never store plain text)
+$hash = & "$InstallDir\tools\verify.exe" hash $Password
+[IO.File]::WriteAllText("$InstallDir\configs\agent.password", ($hash | Out-String).Trim())
 
 $agentCfg = Get-Content "$scriptDir\configs\agent.json" | ConvertFrom-Json
 $agentCfg.install_token = $InstallToken
