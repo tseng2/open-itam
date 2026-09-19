@@ -50,17 +50,37 @@
 
 - [x] 安装脚本（sc.exe create + 计划任务拉托盘）
 
-## 🔄 P4 - 隐蔽性和完整部署体验（进行中）
+## 🔄 P4 - 隐蔽性和完整部署体验（接近完成）
 
-- [ ] **计划：不列在“控制面板/程序和功能”里（不归 Windows Software Inventory）**
+- [x] 不列在“控制面板/程序和功能”里（sc.exe 注册服务，不走 MSI，天然满足）
 
-- [ ] 卸载脚本需要密码验证（调用 tools/hash.go + 比较 hash）
+- [x] 卸载脚本需要密码验证（tools/hash.go + Argon2id 比对，已实测走通）
 
-- [ ] One-shot 部署 zip（含 bin + config + install scripts）
+- [x] One-shot 部署 zip（itagent-agent-v0.2.5.zip：bin + configs + scripts + tools，安装脚本强制清空 device_id/token 防身份继承）
 
 - [ ] 无控制托盘版本（unattended，默认推荐）
 
-- [ ] 服务器二进制 build（server.exe 能把 /api 和 UI 放到同一个服务）
+- [x] 服务器二进制 build（server.exe 一体化：/api + UI 同端口）
+
+- [x] 服务端容器化：Dockerfile 多阶段构建 + docker-compose（Debian 13 VM /opt/itagent 实测部署）
+
+- [x] compose 网段固定 192.168.240.0/24（Docker 默认抢占 172.20.0.0/16 会与办公网冲突，曾导致 VM 整机失联）
+
+- [x] agent 韧性修复：注册 60s 重试直到成功（原先启动失败即永久无 token）；网卡 IPv4/CIDR 采集；托盘运行时间人性化显示
+
+- [x] 双机验证：物理机（cmp001）+ ESXi 虚机（DESKTOP-R6QDB7E）独立身份上链
+
+- [x] 断链演练：服务端停机 → agent spool 堆积零丢失 → 恢复后自动补传、本地零残留
+
+- [x] 重启自愈：ITAgentService 随系统自启 + 托盘登录自启 + 心跳自动恢复
+
+## 🧱 技术债（已知，排期处理）
+
+- [ ] agent 版本号常量未随包迭代（一直上报 0.1.0，UI 无法区分新旧 agent）
+- [ ] ingest 收到 401 时应清空本地 device_token 触发重注册（目前靠重启进程）
+- [ ] 主机序列号垃圾值（"Default string"）在变更事件里未过滤展示
+- [ ] 服务端无数据清理/归档策略（reports 无限增长）
+- [ ] 部署 runbook：daemon.json default-address-pools 需人工配置（要重启 docker，影响同机容器）
 
 ## 📋 P5 - Mac 支持（计划）
 
@@ -118,9 +138,14 @@
 
 ## 当前状态
 
-- **已实现**：P0、P1、P2、P3（数据上报 + 告警 + 排查）
+- **已实现**：P0、P1、P2、P3（数据上报 + 告警 + 排查）；P4 仅剩"无控制托盘版本"
+- **测试环境**：服务端跑在 Debian 13 VM（10.1.1.96:8443，docker compose，数据在 /opt/itagent/deploy/server/data）；agent 双机在线（Win11 物理机 + ESXi 虚机）
+- **基础设施**：100% 依赖开源 + 拥有 Docker 部署（deploy/server/ 一键部署，含源码打包脚本）
+- **代码仓库**：github.com/tseng2/it-agent（main）
 
-- **进行中**：P4
+## 文档索引
 
-- **基础设施**：100% 依赖开源 + 拥有 Docker 部署（目前只是在这台电脑上 curl 测试）
+- `docs/architecture.md` — 技术方案设计（架构/协议/流程/安全）
+- `FEATURES.md` — 本文件，功能地图与阶段进度
+- `deploy/server/README.md` — 服务端部署 runbook（ESXi Debian VM 全流程 + 验收清单）
 
