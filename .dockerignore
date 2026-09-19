@@ -1,0 +1,29 @@
+# Docker 构建上下文排除清单（服务端镜像用）
+# 构建本身只需要: go.mod, go.sum, cmd/, internal/, configs/, web/(源码), deploy/
+
+.git
+temp
+.zcode
+docs
+
+# 前端在镜像里重新构建，本地产物一律不带
+web/node_modules
+web/dist
+internal/server/ui/dist
+
+# 本地产物与数据
+bin
+build
+data
+itagent-deploy
+itagent-pkg
+agent_install_pkg
+
+# 打包产物与本机工具
+*.zip
+*.tar.gz
+*.exe
+*.db
+*.db-wal
+*.db-shm
+*.log

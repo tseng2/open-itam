@@ -1,0 +1,8 @@
+{
+  "listen": ":8443",
+  "db_path": "data/server.db",
+  "install_token": "CHANGE_ME_install_token",
+  "admin_token": "CHANGE_ME_admin_token",
+  "default_heartbeat_sec": 600,
+  "default_full_sec": 3600
+}
