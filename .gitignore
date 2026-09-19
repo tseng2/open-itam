@@ -15,3 +15,5 @@ build/
 *.zip
 .zcode/
 *.zcode
+.zcodeignore
+*.log
