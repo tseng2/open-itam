@@ -58,11 +58,11 @@
         </el-table>
 
         <h4>CPU / 内存 / GPU / 网卡</h4>
-        <el-collapse>
-          <el-collapse-item title="CPU">
+        <el-collapse v-model="hwGroups">
+          <el-collapse-item title="CPU" name="cpu">
             <pre>{{ formatCPU }}</pre>
           </el-collapse-item>
-          <el-collapse-item title="内存条">
+          <el-collapse-item title="内存条" name="mem">
             <el-table :data="fullPayload?.hardware?.memory_modules || []" border>
               <el-table-column prop="slot" label="槽位" width="80" />
               <el-table-column prop="size_mb" label="MB" width="100" />
@@ -71,13 +71,16 @@
               <el-table-column prop="serial" label="序列号" min-width="160" />
             </el-table>
           </el-collapse-item>
-          <el-collapse-item title="GPU">
+          <el-collapse-item title="GPU" name="gpu">
             <pre>{{ formatGPU }}</pre>
           </el-collapse-item>
-          <el-collapse-item title="网卡">
+          <el-collapse-item title="网卡" name="nic">
             <el-table :data="fullPayload?.hardware?.nics || []" border>
               <el-table-column prop="name" label="名称" />
               <el-table-column prop="mac" label="MAC" />
+              <el-table-column label="IP 地址">
+                <template #default="{ row }">{{ (row.ips && row.ips.length) ? row.ips.join('，') : '—' }}</template>
+              </el-table-column>
               <el-table-column prop="speed_mbps" label="Mbps" />
             </el-table>
           </el-collapse-item>
@@ -127,6 +130,7 @@ const fullPayload = ref(null)
 const history = ref([])
 const tab = ref('overview')
 const softSearch = ref('')
+const hwGroups = ref(['cpu', 'mem', 'gpu', 'nic'])
 const pollChanges = inject('pollChanges', () => {})
 
 const online = computed(() => {
