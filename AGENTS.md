@@ -115,5 +115,7 @@
   - `chore:` 构建过程、依赖变更或配置清理
 - **小步提交与原子性**：
   - 每个 Commit 应尽量保证原子性（完成一个独立小闭环），便于 Code Review 与版本回滚。
+- **统一提交身份 (Commit Author)**：
+  - 仓库提交者统一使用项目拥有者标识：`user.name: tseng2`，`user.email: tseng2@foxmail.com`（即 `Author: tseng2 <tseng2@foxmail.com>`），确保 GitHub 贡献者图谱与提交记录归属清晰一致。
 - **本地敏感产物清理**：
   - 提交前检查 `git status`，确保无临时日志（`*.log`）、打包归档（`*.zip`, `*.tar.gz`）、IDE 私有配置（`.zcode/`）等残留文件进入暂存区。
