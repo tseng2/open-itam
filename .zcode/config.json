@@ -1,0 +1,13 @@
+{
+  "mcp": {
+    "servers": {
+      "codebase-memory-mcp": {
+        "type": "stdio",
+        "command": "C:\\Users\\zengzhiqiang\\AppData\\Local\\Programs\\codebase-memory-mcp\\codebase-memory-mcp.exe",
+        "args": [],
+        "timeoutMs": 120000,
+        "enabled": true
+      }
+    }
+  }
+}
