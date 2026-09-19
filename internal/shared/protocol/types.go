@@ -127,9 +127,10 @@ type GPU struct {
 }
 
 type NIC struct {
-	Name      string `json:"name"`
-	MAC       string `json:"mac"`
-	SpeedMbps int    `json:"speed_mbps"`
+	Name      string   `json:"name"`
+	MAC       string   `json:"mac"`
+	SpeedMbps int      `json:"speed_mbps"`
+	IPs       []string `json:"ips,omitempty"`
 }
 
 type SmartHealth struct {

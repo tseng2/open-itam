@@ -25,8 +25,16 @@ $disks = @(Get-CimInstance Win32_DiskDrive | ForEach-Object {
 $gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object {
     @{ model = $_.Name; vram_mb = [int64]($_.AdapterRAM / 1MB) }
 })
+$ipmap = @{}
+Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne '127.0.0.1' } | ForEach-Object {
+    $k = $_.InterfaceIndex
+    if (-not $ipmap.ContainsKey($k)) { $ipmap[$k] = @() }
+    $ipmap[$k] += ($_.IPAddress + '/' + $_.PrefixLength)
+}
 $nics = @(Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapter -and $_.MACAddress } | ForEach-Object {
-    @{ name = $_.Name; mac = $_.MACAddress; speed_mbps = [int64]($_.Speed / 1MB) }
+    $ips = @()
+    if ($ipmap.ContainsKey($_.InterfaceIndex)) { $ips = @($ipmap[$_.InterfaceIndex]) }
+    @{ name = $_.Name; mac = $_.MACAddress; speed_mbps = [int64]($_.Speed / 1MB); ips = $ips }
 })
 @{
     brand = $cs.Manufacturer

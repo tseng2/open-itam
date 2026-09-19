@@ -40,6 +40,10 @@ $agentCfg = Get-Content "$scriptDir\configs\agent.json" | ConvertFrom-Json
 $agentCfg.install_token = $InstallToken
 $agentCfg.server_primary = $Server
 $agentCfg.spool_dir = "$InstallDir\data\spool"
+# 新装/重装必须是无身份状态：device_id 由 agent 按本机硬件生成，绝不能从模板继承，
+# 否则两台机器会共用同一个 device_id（此坑真实发生过）
+$agentCfg.device_id = ""
+$agentCfg.device_token = ""
 $agentCfg | ConvertTo-Json -Depth 10 | Set-Content "$InstallDir\configs\agent.json"
 
 sc.exe stop ITAgentService 2>$null | Out-Null

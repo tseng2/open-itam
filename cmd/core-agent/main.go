@@ -62,14 +62,22 @@ func innerMain(cfgPath string, done <-chan struct{}) {
 
 	u := reporter.NewUploader(cfg.ServerPrimary, cfg.ServerBackup, cfg.DeviceID, cfg.DeviceToken, nil)
 	if cfg.DeviceToken == "" {
-		hb := col.Heartbeat()
-		tok, err := u.Register(cfg.InstallToken, hb.Hostname, hb.OS.Name, cfg.AgentVersion)
-		if err == nil {
-			cfg.DeviceToken = tok
-			config.Save(cfgPath, cfg)
-		} else {
-			log.Printf("register retry later: %v", err)
-		}
+		// 注册不能只试一次：服务端不可达或 token 未同步时，每 60s 重试直到成功，
+		// 否则 agent 会以无 token 状态空转到下次进程重启
+		go func() {
+			hb := col.Heartbeat()
+			for {
+				tok, err := u.Register(cfg.InstallToken, hb.Hostname, hb.OS.Name, cfg.AgentVersion)
+				if err == nil {
+					cfg.DeviceToken = tok
+					config.Save(cfgPath, cfg)
+					log.Printf("registered, device_token saved")
+					return
+				}
+				log.Printf("register failed, retry in 60s: %v", err)
+				time.Sleep(60 * time.Second)
+			}
+		}()
 	}
 
 	spool := reporter.NewSpool(cfg.SpoolDir)

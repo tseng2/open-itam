@@ -80,8 +80,39 @@ func queryStatus() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s\nIP: %s\n运行: %ds\n待传: %d 条",
-		resp.Hostname, strings.Join(resp.InternalIPs, ", "), resp.UptimeSec, resp.SpoolPending), nil
+	return fmt.Sprintf("%s\nIP: %s\n运行: %s\n待传: %d 条",
+		resp.Hostname, strings.Join(resp.InternalIPs, ", "), formatUptime(resp.UptimeSec), resp.SpoolPending), nil
+}
+
+// formatUptime 把秒数换算为 x天x小时x分；不足一天不显示天，不足一小时不显示小时
+func formatUptime(sec int64) string {
+	if sec < 60 {
+		return fmt.Sprintf("%d 秒", sec)
+	}
+	totalMin := sec / 60
+	if totalMin < 60 {
+		return fmt.Sprintf("%d 分", totalMin)
+	}
+	hours := totalMin / 60
+	mins := totalMin % 60
+	if hours < 24 {
+		if mins == 0 {
+			return fmt.Sprintf("%d 小时", hours)
+		}
+		return fmt.Sprintf("%d 小时 %d 分", hours, mins)
+	}
+	days := hours / 24
+	hours %= 24
+	switch {
+	case hours == 0 && mins == 0:
+		return fmt.Sprintf("%d 天", days)
+	case hours == 0:
+		return fmt.Sprintf("%d 天 %d 分", days, mins)
+	case mins == 0:
+		return fmt.Sprintf("%d 天 %d 小时", days, hours)
+	default:
+		return fmt.Sprintf("%d 天 %d 小时 %d 分", days, hours, mins)
+	}
 }
 
 func refreshTooltip() {
