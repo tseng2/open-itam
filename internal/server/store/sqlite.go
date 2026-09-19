@@ -9,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 const schema = `

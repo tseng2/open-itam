@@ -4,7 +4,7 @@
 
 # 所有 FROM 引用的 ARG 必须集中在第一个 FROM 之前声明（FROM 只能看到全局 ARG）
 ARG NODE_IMAGE=node:20-bookworm-slim
-ARG GO_IMAGE=golang:1.23-bookworm
+ARG GO_IMAGE=golang:bookworm
 
 # ---------- 阶段 1: Web 前端构建 ----------
 FROM ${NODE_IMAGE} AS web

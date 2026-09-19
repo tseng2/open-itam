@@ -16,7 +16,7 @@ export async function api(path, opts = {}) {
     },
   })
   if (resp.status === 401) {
-    window.location.hash = '#/devices'
+    window.location.hash = '#/login'
     throw new Error('unauthorized')
   }
   const data = await resp.json()

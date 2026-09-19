@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"itagent/internal/server/alert"
+	"itagent/internal/server/api/middleware"
+	"itagent/internal/server/model"
 	"itagent/internal/server/store"
 	"itagent/internal/shared/protocol"
 )
@@ -37,6 +39,19 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.Handle("GET /api/v1/devices/{id}/history", h.admin(h.handleDeviceHistory))
 	h.mux.Handle("GET /api/v1/changes", h.admin(h.handleListChanges))
 	h.mux.Handle("POST /api/v1/changes/{id}/ack", h.admin(h.handleAckChange))
+
+	// 挂载全新 ITAM 资产管理与集团公司路由
+	ginEngine := SetupRouter()
+	h.mux.Handle("/api/v1/auth", ginEngine)
+	h.mux.Handle("/api/v1/auth/", ginEngine)
+	h.mux.Handle("/api/v1/assets", ginEngine)
+	h.mux.Handle("/api/v1/assets/", ginEngine)
+	h.mux.Handle("/api/v1/companies", ginEngine)
+	h.mux.Handle("/api/v1/companies/", ginEngine)
+	h.mux.Handle("/api/v1/users", ginEngine)
+	h.mux.Handle("/api/v1/users/", ginEngine)
+	h.mux.Handle("/api/v1/agent/heartbeat", ginEngine)
+
 	return h
 }
 
@@ -61,11 +76,21 @@ func bearerToken(r *http.Request) string {
 
 func (h *Handler) admin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.cfg.AdminToken == "" || bearerToken(r) != h.cfg.AdminToken {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"code": 401, "message": "admin token required"})
+		token := bearerToken(r)
+		// 1. 兼容原配置的静态 AdminToken
+		if h.cfg.AdminToken != "" && token == h.cfg.AdminToken {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		// 2. 兼容登录后颁发的 JWT Token (管理员或超管身份)
+		if token != "" {
+			claims, err := middleware.ParseToken(token)
+			if err == nil && (claims.Role == "super_admin" || claims.Role == "admin") {
+				next(w, r)
+				return
+			}
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": 401, "message": "admin token or login required"})
 	}
 }
 
@@ -200,6 +225,124 @@ func (h *Handler) processFullReport(r *http.Request, env protocol.Envelope) {
 
 	snapPayload, _ := json.Marshal(full)
 	_ = h.store.SaveSnapshot(ctx, store.Snapshot{DeviceID: env.DeviceID, Payload: snapPayload})
+
+	// 核心：将 Agent 采集上报的终端硬件画像与实物资产台账自动关联
+	h.syncToAssetLedger(env.DeviceID, full)
+}
+
+func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) {
+	if store.DB == nil {
+		return
+	}
+
+	// 1. 确保默认集团公司存在
+	var company model.Company
+	if err := store.DB.First(&company).Error; err != nil {
+		company = model.Company{
+			Name: "默认集团公司",
+			Code: "DEFAULT",
+		}
+		store.DB.Create(&company)
+	}
+
+	// 2. 如果上报了 AD 登录域账号，自动建立或关联用户档案
+	var userID *int64
+	if full.Logon.User != "" {
+		var user model.User
+		err := store.DB.Where("username = ?", full.Logon.User).First(&user).Error
+		if err != nil {
+			user = model.User{
+				CompanyID: company.ID,
+				Username:  full.Logon.User,
+				RealName:  full.Logon.User,
+				Status:    "active",
+			}
+			store.DB.Create(&user)
+		}
+		userID = &user.ID
+	}
+
+	// 3. 自动同步或创建该终端对应的实物资产台账 (根据出厂SN或主机名关联)
+	sn := strings.TrimSpace(full.Hardware.Serial)
+	if sn == "" || sn == "Default string" {
+		sn = strings.TrimSpace(full.Hardware.BIOSSerial)
+	}
+	if sn == "" {
+		sn = deviceID
+	}
+
+	var asset model.Asset
+	err := store.DB.Where("serial_number = ? AND serial_number != '' AND serial_number != 'Default string'", sn).First(&asset).Error
+	if err != nil {
+		// 资产编码（固定资产编号）必须由人工录入或导入，Agent 自动上报仅生成临时待确认编码或预留为空
+		brand := full.Hardware.Brand
+		if brand == "" {
+			brand = "OEM"
+		}
+		modelName := full.Hardware.Model
+		if modelName == "" {
+			modelName = "PC工作站"
+		}
+		asset = model.Asset{
+			CompanyID:    company.ID,
+			CategoryID:   1, // 默认为电脑整机
+			AssetTag:     "待编-" + full.Hostname, // 明确标识为计算机名待人工赋予正式固定资产编号
+			Status:       20, // 自动置为使用中
+			Brand:        brand,
+			ModelName:    modelName,
+			SerialNumber: sn,
+			UserID:       userID,
+			Remark:       "计算机名称: " + full.Hostname + " (由 Agent 自动采集关联，待补充固定资产编码与U8单号)",
+		}
+		store.DB.Create(&asset)
+
+		event := model.AssetEvent{
+			AssetID:     asset.ID,
+			EventType:   "auto_discover",
+			Title:       "Agent 自动发现并关联固定资产",
+			Description: "终端设备 " + full.Hostname + " 自动上报入库",
+			OperatorID:  userID,
+		}
+		store.DB.Create(&event)
+	} else {
+		// 已存在资产，更新当前使用人与状态
+		if userID != nil && (asset.UserID == nil || *asset.UserID != *userID) {
+			asset.UserID = userID
+			asset.Status = 20
+			store.DB.Save(&asset)
+		}
+	}
+
+	// 4. 同步更新 agent_devices 关联表
+	var dev model.Device
+	errDev := store.DB.Where("device_id = ?", deviceID).First(&dev).Error
+	now := time.Now()
+	if errDev != nil {
+		dev = model.Device{
+			AssetID:       &asset.ID,
+			DeviceID:      deviceID,
+			Hostname:      full.Hostname,
+			OSName:        full.OS.Name,
+			CPUModel:      "",
+			AgentVersion:  "0.1.0",
+			LastSeenAt:    now,
+		}
+		if len(full.Hardware.CPU) > 0 {
+			dev.CPUModel = full.Hardware.CPU[0].Model
+		}
+		dev.MemoryTotalGB = float64(full.Hardware.MemoryTotalMB) / 1024.0
+		store.DB.Create(&dev)
+	} else {
+		dev.AssetID = &asset.ID
+		dev.Hostname = full.Hostname
+		dev.OSName = full.OS.Name
+		if len(full.Hardware.CPU) > 0 {
+			dev.CPUModel = full.Hardware.CPU[0].Model
+		}
+		dev.MemoryTotalGB = float64(full.Hardware.MemoryTotalMB) / 1024.0
+		dev.LastSeenAt = now
+		store.DB.Save(&dev)
+	}
 }
 
 func (h *Handler) saveEvents(ctx context.Context, deviceID string, events []alert.Event) {

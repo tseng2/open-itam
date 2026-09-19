@@ -59,6 +59,10 @@ func main() {
 	}
 	defer st.Close()
 
+	if _, err := store.InitDB(cfg.DBPath); err != nil {
+		log.Fatalf("init gorm store: %v", err)
+	}
+
 	h := api.NewHandler(st, api.Config{
 		InstallToken:        cfg.InstallToken,
 		AdminToken:          cfg.AdminToken,
