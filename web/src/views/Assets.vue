@@ -35,6 +35,16 @@
           />
         </el-form-item>
 
+        <el-form-item label="全文搜索">
+          <el-input
+            v-model="query.keyword"
+            placeholder="MAC / IP / SN / 使用人 / 型号 / 位置等"
+            clearable
+            style="width: 260px"
+            @keyup.enter="fetchAssets"
+          />
+        </el-form-item>
+
         <el-form-item label="状态">
           <el-select v-model="query.status" placeholder="全部状态" clearable style="width: 120px">
             <el-option label="库存中" :value="10" />
@@ -90,6 +100,7 @@
               </el-tag>
               <div class="sub-text">内网IP: {{ row.device.ip_address || '-' }}</div>
               <div class="sub-text" v-if="row.device.public_ip">公网IP: {{ row.device.public_ip }}</div>
+              <div class="sub-text mono">ID: {{ row.device.device_id }}</div>
             </div>
             <span v-else class="empty-cell">未关联终端</span>
           </template>
@@ -192,6 +203,16 @@
           </el-descriptions-item>
           <el-descriptions-item label="出厂序列号 (SN)">
             {{ currentAsset.serial_number || '-' }}
+            <el-tooltip
+              v-if="isPseudoSN"
+              content="组装机主板未写入真实出厂序列号（垃圾值已过滤），系统以终端指纹暂代 SN"
+              placement="top"
+            >
+              <el-tag type="warning" size="small" style="margin-left: 6px">终端指纹暂代</el-tag>
+            </el-tooltip>
+          </el-descriptions-item>
+          <el-descriptions-item label="终端ID（系统指纹）">
+            <span class="mono">{{ currentAsset.device?.device_id || '-' }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="关联计算机名">
             <el-tag size="small" type="success">{{ currentAsset.device?.hostname || currentAsset.asset_tag }}</el-tag>
@@ -690,6 +711,13 @@ const pendingReviewEvent = computed(() => {
   return assetEvents.value.find(e => e.review_status === 20 && e.event_type === 'hardware_change')
 })
 
+// 组装机无真实出厂 SN 时，服务端以终端指纹（device_id）暂代，页面上给出区分提示
+const isPseudoSN = computed(() => {
+  const sn = currentAsset.value?.serial_number
+  const did = currentAsset.value?.device?.device_id
+  return !!sn && !!did && sn === did
+})
+
 const showReviewDialog = ref(false)
 const reviewSubmitting = ref(false)
 const reviewForm = reactive({
@@ -701,6 +729,7 @@ const reviewForm = reactive({
 const query = reactive({
   company_id: '',
   asset_tag: '',
+  keyword: '',
   status: '',
   page: 1,
   page_size: 20,
@@ -1060,6 +1089,7 @@ async function fetchAssets() {
     const params = new URLSearchParams()
     if (query.company_id) params.append('company_id', query.company_id)
     if (query.asset_tag) params.append('asset_tag', query.asset_tag)
+    if (query.keyword) params.append('keyword', query.keyword)
     if (query.status) params.append('status', query.status)
     params.append('page', query.page)
     params.append('page_size', query.page_size)
@@ -1077,6 +1107,7 @@ async function fetchAssets() {
 function resetQuery() {
   query.company_id = ''
   query.asset_tag = ''
+  query.keyword = ''
   query.status = ''
   query.page = 1
   fetchAssets()
@@ -1164,6 +1195,9 @@ onMounted(() => {
 .sub-text {
   font-size: 12px;
   color: #9ca3af;
+}
+.mono {
+  font-family: monospace;
 }
 .empty-cell {
   color: #d1d5db;

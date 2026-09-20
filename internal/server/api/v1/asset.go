@@ -60,6 +60,7 @@ type ListAssetQuery struct {
 	U8OrderNo string `form:"u8_order_no"`
 	Status    int    `form:"status"`
 	AssetTag  string `form:"asset_tag"`
+	Keyword   string `form:"keyword"` // 全文模糊搜索：编码/SN/MAC/IP/使用人等台账字段
 	Page      int    `form:"page,default=1"`
 	PageSize  int    `form:"page_size,default=20"`
 }
@@ -85,6 +86,29 @@ func (h *AssetHandler) List(c *gin.Context) {
 	if query.AssetTag != "" {
 		db = db.Where("asset_tag LIKE ?", "%"+query.AssetTag+"%")
 	}
+	if query.Keyword != "" {
+		// 跨台账主表、关联终端、领用人的全文模糊匹配；
+		// agent_devices.asset_id 与 users.id 均为 1:1 关联，JOIN 不会放大行数
+		kw := "%" + query.Keyword + "%"
+		cols := []string{
+			"assets.asset_tag", "assets.serial_number", "assets.mac_address",
+			"assets.brand", "assets.model_name", "assets.cpu_name",
+			"assets.manager_name", "assets.location", "assets.department_name",
+			"assets.department_sub", "assets.u8_order_no", "assets.remark",
+			"agent_devices.hostname", "agent_devices.ip_address",
+			"agent_devices.public_ip", "agent_devices.mac_address",
+			"users.real_name", "users.username",
+		}
+		conds := make([]string, len(cols))
+		args := make([]interface{}, len(cols))
+		for i, col := range cols {
+			conds[i] = col + " LIKE ?"
+			args[i] = kw
+		}
+		db = db.Joins("LEFT JOIN agent_devices ON agent_devices.asset_id = assets.id").
+			Joins("LEFT JOIN users ON users.id = assets.user_id").
+			Where(strings.Join(conds, " OR "), args...)
+	}
 
 	var total int64
 	db.Count(&total)
@@ -93,7 +117,7 @@ func (h *AssetHandler) List(c *gin.Context) {
 	offset := (query.Page - 1) * query.PageSize
 	if err := db.Preload("Company").Preload("User").Preload("Device").
 		Offset(offset).Limit(query.PageSize).
-		Order("id desc").Find(&items).Error; err != nil {
+		Order("assets.id desc").Find(&items).Error; err != nil {
 		Fail(c, http.StatusInternalServerError, 50001, "failed to query assets")
 		return
 	}
