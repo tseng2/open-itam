@@ -282,7 +282,7 @@ func (h *AssetHandler) Update(c *gin.Context) {
 	setStr("asset_tag", req.AssetTag)
 	setStr("u8_order_no", req.U8OrderNo)
 	setStr("brand", req.Brand)
-	setStr("model", req.ModelName)
+	setStr("model_name", req.ModelName) // DB 列名是 model_name（GORM 对 ModelName 的默认蛇形映射），不是 JSON 里的 model
 	setStr("serial_number", req.SerialNumber)
 	setStr("cpu_name", req.CPUName)
 	setStr("memory_size", req.MemorySize)
