@@ -97,15 +97,19 @@
 无论是否安装 Agent，所有的资产（PC、显示器等）都在这。
 - `id` (PK)
 - `company_id` (所属公司)
-- `category_id` (资产分类ID：笔记本/台式机/显示器)
+- `center_name` (中心) / `department_name` (部门) / `department_sub` (部门完整路径)
+- `location` (主要存放位置或用途) / `manager_name` (资产负责人)
+- `category_id` / `category_name` (资产分类：笔记本/台式机/显示器/外设)
 - `asset_tag` (资产标签号，打印条码用)
-- `u8_order_no` (U8 采购订单号)
+- `u8_order_no` (U8 采购订单号；仅作台账明细字段，不在资产列表主页展示)
 - `user_id` (当前领用人)
 - `status` (状态：10-库存中, 20-使用中, 30-维修中, 40-已报废)
-- `brand` (品牌)
-- `model` (型号)
-- `serial_number` (硬件序列号 SN)
-- `purchase_date` (采购日期)
+- `brand` (品牌) / `model` (型号) / `serial_number` (硬件序列号 SN)
+- 账面硬件规格（人工维护的台账值，覆盖无 Agent 终端；Agent 仅在字段为空时回填初始化，不覆盖人工值）：
+  - `cpu_name` / `memory_size` / `main_disk` / `secondary_disk` / `gpu_name` / `mac_address`
+- 采购与财务：`purchase_date` / `acceptor` (验收人) / `warranty_period` (保修期) / `original_price` (原值不含税) / `net_value` (净值) / `sec_encrypted` (加密软件绿盾纳管) / `remark`
+- `current_version` (当前硬件基线版本号)
+- 派生计算列（不入库，前端实时计算）：购入年份、已使用天数/月数
 
 #### 实体 4：Agent 终端指纹 (Device) - `devices`
 专用于 Agent 动态上报的网络与 OS 数据，与 `assets` 为 1:1 关系（或者资产主表的一张扩展表）。
@@ -118,13 +122,47 @@
 - `last_seen_at` (最后心跳时间)
 
 #### 实体 5：资产事件轴 (Asset Event) - `asset_events`
-记录“人员调拨”、“内存升级”、“系统重装”等所有动作。
+对应台账"资产履历记录表"，记录"人员调拨"、"内存升级"、"系统重装"等所有动作。
 - `id` (PK)
 - `asset_id` (关联资产)
-- `event_type` (事件类型：派发、硬件变更、报废)
-- `description` (事件详情 JSON 或 String)
+- `event_type` (事件类型：create / auto_discover / assign / return / repair / hardware_change / scrap)
+- `title` / `description` (详情或硬件快照 JSON)
+- `cost` (处理金额) / `oa_number` (OA 申请单号)
+- `target_person` (领用/责任人员)
+- 配件流转：`part_type` / `part_model` / `quantity` / `locker_location`
+- `warranty_expiry` (维修质保截止) / `return_date` (待归还日期) / `net_value` (发生时净值)
+- `review_status` (审核：10-已完成, 20-待审核, 30-已驳回)
 - `operator_id` (操作人，IT或系统自动)
 - `created_at` (事件发生时间)
+
+#### 实体 6：外寄维修登记 (AssetRepair) - `asset_repairs`
+对应台账"IT设备外寄维修登记表"。
+- `asset_id` (关联资产)
+- `oa_number` / `user_name` (送修时使用人)
+- `fault_reason` (故障原因) / `diagnosis` (IT诊断结果) / `suggestion` (IT维修建议)
+- `vendor` (维修厂商) / `contact_name` / `contact_phone`
+- `send_date` (寄修日期) / `return_date` (寄回日期) / `cost` (维修金额) / `result` (维修结果)
+- `status`：repairing(寄修中) / returned(已寄回) / scrapped(报废)
+- 状态联动：登记送修时资产自动置 30-维修中，登记寄回(returned)时恢复 20-使用中，均自动写入资产履历
+
+#### 实体 7：移动存储领用 (StorageLending) - `storage_lendings`
+对应台账"移动存储领用表"（U 盘、移动硬盘等）。
+- `company_id` / `department` / `borrower` (领用人)
+- `borrow_date` (领用日期) / `return_date` (归还日期)
+- `brand` / `spec` (规格容量) / `device_code` (设备编码)
+- `quantity` (领用数量) / `return_qty` (归还数量)
+- `sec_certified` (绿盾认证) / `remark`
+
+#### 实体 8：配件出入库流水 (PartRecord) - `part_records`
+对应台账"配件记录表"，是独立于单个资产的库存流水。
+- `company_id`
+- `direction` (出入状态：in-入库 / out-出库，常量 `PartDirectionIn/Out`)
+- `operated_at` (业务发生时间，区别于记录创建时间)
+- `part_type` (物品类型：内存/硬盘/键鼠等) / `part_name` / `part_model` / `brand`
+- `quantity` / `unit` (单位)
+- `locker_location` (IT 储物柜位置) / `location` (存放位置)
+- `purpose` (用途) / `oa_number` / `asset_tag` (关联固定资产编号)
+- `operator_id` (操作人)
 
 ---
 

@@ -54,8 +54,8 @@
 | 托盘 | getlantern/systray | 跨平台、无外部依赖 |
 | 本地队列 | 文件 spool 目录（JSON 文件，成功即删） | 零依赖、断电安全、本地零残留 |
 | IPC | Windows: named pipe `\\.\pipe\itagent`；macOS: unix socket `/var/run/itagent.sock` | 托盘 <-> core-agent |
-| 服务端框架 | Go 标准库 net/http（v1） | 零外部依赖，后续可升 Gin |
-| 服务端存储 | SQLite (modernc.org/sqlite 纯 Go) → PostgreSQL / MySQL（>1500台或接 Snipe-IT 深度集成时切换） | 按规模升级，见 2.1 |
+| 服务端框架 | Agent 通道 net/http 标准库 mux + 管理 API Gin（v1，JWT 鉴权） | 双栈并存，见 §7 路由挂载约定 |
+| 服务端存储 | GORM + MySQL/MariaDB（生产，AutoMigrate 建表）；SQLite 仅历史开发默认 | 切换记录见 git 历史 |
 | 服务端 UI | Vue3 + Element Plus（构建后嵌入 Go 二进制） | 运维友好 |
 | 部署 | Windows: 安装脚本 + `sc.exe create`；macOS: .pkg + LaunchDaemon plist | |
 
@@ -377,17 +377,38 @@ sequenceDiagram
 
 ## 7. 服务端 API 清单
 
+**Agent 通道（device_token / install_token）：**
+
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
 | POST | `/api/v1/register` | 设备注册 | install_token |
 | POST | `/api/v1/ingest` | 数据上报 | device_token |
 | GET | `/api/v1/agent/config` | Agent 拉配置 | device_token |
-| GET | `/api/v1/devices` | 设备列表 | 管理员 |
-| GET | `/api/v1/devices/{id}` | 设备详情 | 管理员 |
-| GET | `/api/v1/devices/{id}/history` | 上报历史 | 管理员 |
-| GET | `/api/v1/changes` | 变更事件列表 | 管理员 |
-| POST | `/api/v1/changes/{id}/ack` | 标记已读 | 管理员 |
-| POST | `/api/v1/assets/sync-snipeit` | Snipe-IT 同步 | 管理员 |
+
+**管理 API（JWT，gin 引擎）：**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/auth/login` | 登录签发 JWT |
+| GET/POST/GET:id | `/api/v1/companies` | 公司列表/新增/详情 |
+| GET/POST | `/api/v1/assets` | 资产列表（company_id/status/asset_tag 筛选+分页）/ 建账登记 |
+| GET/PUT | `/api/v1/assets/{id}` | 台账明细 / 台账字段维护（含账面规格） |
+| GET | `/api/v1/assets/{id}/events` | 资产履历时轴 |
+| GET | `/api/v1/assets/{id}/versions` | 硬件基线版本列表 |
+| POST | `/api/v1/assets/{id}/events/{eid}/approve` | 硬件变更审核（更新基线） |
+| GET/POST | `/api/v1/assets/{id}/repairs` | 外寄维修列表 / 送修登记（联动资产状态机） |
+| PUT | `/api/v1/assets/{id}/repairs/{rid}` | 维修寄回/结果登记 |
+| GET/POST/PUT:id | `/api/v1/storage-lendings` | 移动存储领用/归还登记 |
+| GET/POST | `/api/v1/part-records` | 配件出入库流水 |
+| GET | `/api/v1/devices` | 设备列表（net/http 栈，admin_token） |
+| GET | `/api/v1/devices/{id}` | 设备详情（同上） |
+| GET | `/api/v1/devices/{id}/history` | 上报历史（同上） |
+| GET | `/api/v1/changes` | 变更事件列表（同上） |
+| POST | `/api/v1/changes/{id}/ack` | 标记已读（同上） |
+
+> Snipe-IT 同步接口已按 implementation_plan.md 的 Deprecations 作废移除。
+
+**路由挂载约定（易踩坑）**：服务端是双层路由——外层 `net/http` ServeMux 负责 Agent 通道，并按**硬编码前缀**把管理 API 转给内层 gin 引擎（`internal/server/api/server.go` 的 `NewHandler`）。新增一类 gin 资源路由时，除了在 `api/router.go` 注册，还必须在该前缀挂载表中补一行 `/api/v1/<resource>`，否则外层 mux 会直接返回 404，且构建、单测都不会报错，只能部署后才会暴露。
 
 ---
 
