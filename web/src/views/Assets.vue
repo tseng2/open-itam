@@ -862,10 +862,11 @@ async function openAssetDetail(row) {
 
     const deviceId = row.device?.device_id || ''
     if (deviceId) {
-      const res = await api(`/api/v1/devices/${deviceId}/history?limit=1`)
-      if (res.reports && res.reports.length > 0) {
-        deviceDetail.value = res.reports[0].payload
-      }
+      const res = await api(`/api/v1/devices/${deviceId}/history?limit=20`)
+      const reports = res.reports || []
+      // 最新一条可能是心跳包（不含 hardware），取最近一条全量上报，与终端画像页口径一致
+      const full = reports.find(r => r.report_type === 'full')
+      deviceDetail.value = full ? full.payload : null
     } else {
       deviceDetail.value = null
     }
