@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -390,6 +391,7 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 			Hostname:      full.Hostname,
 			OSName:        full.OS.Name,
 			IPAddress:     primaryIP,
+			PublicIP:      full.Network.PublicIP,
 			MacAddress:    primaryMAC,
 			CPUModel:      "",
 			AgentVersion:  "0.1.0",
@@ -409,6 +411,9 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 		if primaryIP != "" {
 			dev.IPAddress = primaryIP
 		}
+		if full.Network.PublicIP != "" {
+			dev.PublicIP = full.Network.PublicIP
+		}
 		if primaryMAC != "" {
 			dev.MacAddress = primaryMAC
 		}
@@ -418,6 +423,68 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 		dev.MemoryTotalGB = float64(full.Hardware.MemoryTotalMB) / 1024.0
 		dev.LastSeenAt = now
 		store.DB.Save(&dev)
+	}
+
+	// 5. 硬件基线与版本控制
+	if asset.ID > 0 {
+		var currentVersion model.AssetVersion
+		errVer := store.DB.Where("asset_id = ? AND version = ?", asset.ID, asset.CurrentVersion).First(&currentVersion).Error
+		
+		hwBytes, _ := json.Marshal(full.Hardware)
+		hwSnapshot := string(hwBytes)
+		
+		if errVer != nil {
+			// 如果没有基线（通常是第一次同步），初始化基线
+			currentVersion = model.AssetVersion{
+				AssetID:          asset.ID,
+				Version:          1,
+				HardwareSnapshot: hwSnapshot,
+				ChangeReason:     "初始化硬件基线",
+			}
+			store.DB.Create(&currentVersion)
+			
+			if asset.CurrentVersion == 0 {
+				asset.CurrentVersion = 1
+				store.DB.Save(&asset)
+			}
+		} else {
+			// 对比基线
+			var baseHw protocol.Hardware
+			if json.Unmarshal([]byte(currentVersion.HardwareSnapshot), &baseHw) == nil {
+				// 简易比对：内存和磁盘数量
+				changed := false
+				var diff []string
+				
+				baseMem := baseHw.MemoryTotalMB / 1024
+				newMem := full.Hardware.MemoryTotalMB / 1024
+				if baseMem != newMem {
+					changed = true
+					diff = append(diff, fmt.Sprintf("内存: %dGB -> %dGB", baseMem, newMem))
+				}
+				
+				if len(baseHw.Disks) != len(full.Hardware.Disks) {
+					changed = true
+					diff = append(diff, fmt.Sprintf("磁盘数量: %d -> %d", len(baseHw.Disks), len(full.Hardware.Disks)))
+				}
+				
+				if changed {
+					// 检查是否已有待审核的事件（避免重复提交待审）
+					var pending model.AssetEvent
+					errPending := store.DB.Where("asset_id = ? AND event_type = 'hardware_change' AND review_status = 20", asset.ID).First(&pending).Error
+					if errPending != nil {
+						// 创建待审核事件
+						event := model.AssetEvent{
+							AssetID:      asset.ID,
+							EventType:    "hardware_change",
+							Title:        "自动发现硬件配置变更",
+							Description:  "变更详情: " + strings.Join(diff, ", ") + "\n当前快照: " + hwSnapshot,
+							ReviewStatus: 20, // 待审核
+						}
+						store.DB.Create(&event)
+					}
+				}
+			}
+		}
 	}
 }
 

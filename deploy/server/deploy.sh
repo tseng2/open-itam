@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# itagent 服务端 - Debian VM 上一键构建部署
+# open-itam 服务端 - Debian VM 上一键构建部署
 # 用法: 在仓库根目录的 deploy/server/ 下执行 ./deploy.sh
 set -euo pipefail
 cd "$(dirname "$0")"

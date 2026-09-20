@@ -15,6 +15,7 @@ import (
 
 type serverConfig struct {
 	Listen              string `json:"listen"`
+	DBType              string `json:"db_type"`
 	DBPath              string `json:"db_path"`
 	InstallToken        string `json:"install_token"`
 	AdminToken          string `json:"admin_token"`
@@ -37,6 +38,9 @@ func main() {
 	if cfg.Listen == "" {
 		cfg.Listen = ":8443"
 	}
+	if cfg.DBType == "" {
+		cfg.DBType = "sqlite"
+	}
 	if cfg.DBPath == "" {
 		cfg.DBPath = "data/server.db"
 	}
@@ -50,18 +54,18 @@ func main() {
 		cfg.DefaultFullSec = 3600
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
-		log.Fatalf("create db dir: %v", err)
+	if cfg.DBType == "sqlite" {
+		if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
+			log.Fatalf("create db dir: %v", err)
+		}
 	}
-	st, err := store.OpenSQLite(cfg.DBPath)
-	if err != nil {
-		log.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
 
-	if _, err := store.InitDB(cfg.DBPath); err != nil {
+	db, err := store.InitDB(cfg.DBType, cfg.DBPath)
+	if err != nil {
 		log.Fatalf("init gorm store: %v", err)
 	}
+
+	st := store.NewGormStore(db)
 
 	h := api.NewHandler(st, api.Config{
 		InstallToken:        cfg.InstallToken,

@@ -1,5 +1,24 @@
 services:
-  itagent-server:
+  itagent-db:
+    image: mariadb:11.4.7
+    container_name: open-itam-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: open_itam@2026
+      MYSQL_DATABASE: open_itam
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./mysql-data:/var/lib/mysql
+    networks:
+      - itagent
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  open-itam-server:
     build:
       context: ../..
       dockerfile: deploy/server/Dockerfile
@@ -7,9 +26,12 @@ services:
       args:
         NPM_REGISTRY: https://registry.npmmirror.com
         GOPROXY: https://goproxy.cn,direct
-    image: itagent-server:0.1.0
-    container_name: itagent-server
+    image: open-itam-server:0.1.0
+    container_name: open-itam-server
     restart: unless-stopped
+    depends_on:
+      itagent-db:
+        condition: service_healthy
     ports:
       # host:container，对外暴露 8443（内网 HTTP，公网 TLS 由 NPM 反代做，见 architecture.md）
       - "8443:8443"

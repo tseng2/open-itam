@@ -1,6 +1,7 @@
 {
   "listen": ":8443",
-  "db_path": "data/server.db",
+  "db_type": "mysql",
+  "db_path": "root:open_itam@2026@tcp(10.1.1.96:3306)/open_itam?charset=utf8mb4&parseTime=True&loc=Local",
   "install_token": "MyLocalSecret123",
   "admin_token": "MyLocalSecret123",
   "default_heartbeat_sec": 600,

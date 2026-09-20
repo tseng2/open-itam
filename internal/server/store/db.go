@@ -6,6 +6,7 @@ import (
 
 	"itagent/internal/server/model"
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -13,14 +14,28 @@ import (
 var DB *gorm.DB
 
 // InitDB 初始化数据库连接并自动迁移模型
-// 默认支持 SQLite，未来可通过配置灵活切换 PostgreSQL / MySQL
-func InitDB(dsn string) (*gorm.DB, error) {
+// 支持 SQLite 和 MySQL
+func InitDB(dbType, dsn string) (*gorm.DB, error) {
+	if dbType == "" {
+		dbType = "sqlite"
+	}
 	if dsn == "" {
-		dsn = "itagent.db"
+		if dbType == "sqlite" {
+			dsn = "data/server.db"
+		} else {
+			return nil, fmt.Errorf("dsn is required for mysql")
+		}
+	}
+
+	var dialector gorm.Dialector
+	if dbType == "mysql" {
+		dialector = mysql.Open(dsn)
+	} else {
+		dialector = sqlite.Open(dsn)
 	}
 
 	var err error
-	DB, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{
+	DB, err = gorm.Open(dialector, &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 	if err != nil {
@@ -35,11 +50,16 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&model.Asset{},
 		&model.Device{},
 		&model.AssetEvent{},
+		&model.AssetVersion{},
+		&model.AgentDevice{},
+		&model.AgentReport{},
+		&model.AgentSnapshot{},
+		&model.AgentChangeEvent{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("auto migration failed: %w", err)
 	}
 
-	log.Printf("[DB] Database initialized and migrated successfully using DSN: %s", dsn)
+	log.Printf("[DB] Database initialized and migrated successfully using %s", dbType)
 	return DB, nil
 }

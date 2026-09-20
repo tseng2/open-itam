@@ -94,7 +94,8 @@
               <el-tag type="success" size="small">
                 <el-icon><Monitor /></el-icon> {{ row.device.hostname }}
               </el-tag>
-              <div class="sub-text">IP: {{ row.device.ip_address || '-' }}</div>
+              <div class="sub-text">内网IP: {{ row.device.ip_address || '-' }}</div>
+              <div class="sub-text" v-if="row.device.public_ip">公网IP: {{ row.device.public_ip }}</div>
             </div>
             <span v-else class="empty-cell">未关联终端</span>
           </template>
@@ -111,6 +112,11 @@
           <template #default="{ row }">
             <span v-if="row.user">{{ row.user.real_name }}</span>
             <el-tag v-else type="info" size="small">未分配/在库</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="current_version" label="基线版本" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag type="info" effect="plain" size="small">v{{ row.current_version || 1 }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100">
@@ -150,6 +156,22 @@
       destroy-on-close
     >
       <div v-if="currentAsset" v-loading="drawerLoading">
+        <el-alert
+          v-if="pendingReviewEvent"
+          title="发现未审核的硬件配置变更！"
+          type="warning"
+          show-icon
+          :description="pendingReviewEvent.description"
+          style="margin-bottom: 16px"
+          :closable="false"
+        >
+          <template #default>
+            <div style="margin-top: 8px">
+              <el-button type="primary" size="small" @click="openReviewDialog(pendingReviewEvent)">立即审核</el-button>
+            </div>
+          </template>
+        </el-alert>
+
         <el-descriptions title="基础实物档案" :column="2" border style="margin-bottom: 20px">
           <el-descriptions-item label="固定资产编码">
             <strong style="color: #2563eb">{{ currentAsset.asset_tag }}</strong>
@@ -229,6 +251,32 @@
               <el-table-column prop="install_path" label="安装路径" min-width="240" show-overflow-tooltip />
             </el-table>
           </el-tab-pane>
+
+          <!-- 资产履历 -->
+          <el-tab-pane label="资产履历 (Timeline)" name="events">
+            <el-timeline style="margin-top: 16px; padding-left: 10px;">
+              <el-timeline-item
+                v-for="evt in assetEvents"
+                :key="evt.id"
+                :timestamp="formatTime(evt.created_at)"
+                :type="evt.event_type === 'hardware_change' ? 'warning' : 'primary'"
+                placement="top"
+              >
+                <el-card shadow="hover">
+                  <h4>{{ evt.title }} <el-tag size="small" v-if="evt.review_status === 20" type="danger">待审核</el-tag></h4>
+                  <p style="white-space: pre-wrap; font-size: 13px; color: #666; margin: 8px 0;">{{ evt.description }}</p>
+                  <div style="margin-top: 8px; font-size: 12px; color: #999" v-if="evt.oa_number || evt.cost">
+                    <span v-if="evt.oa_number" style="margin-right: 16px"><el-icon><Document /></el-icon> OA单号: {{ evt.oa_number }}</span>
+                    <span v-if="evt.cost"><el-icon><Money /></el-icon> 产生金额: ￥{{ evt.cost.toFixed(2) }}</span>
+                  </div>
+                  <div style="margin-top: 8px; font-size: 12px; color: #999" v-if="evt.operator">
+                    操作人: {{ evt.operator.real_name }}
+                  </div>
+                </el-card>
+              </el-timeline-item>
+              <el-empty v-if="assetEvents.length === 0" description="暂无履历记录" />
+            </el-timeline>
+          </el-tab-pane>
         </el-tabs>
       </div>
     </el-drawer>
@@ -275,11 +323,32 @@
         <el-button type="primary" :loading="submitting" @click="submitCreate">确认建账</el-button>
       </template>
     </el-dialog>
+
+    <!-- 硬件变更审核对话框 -->
+    <el-dialog v-model="showReviewDialog" title="硬件变更审核" width="500px" destroy-on-close>
+      <el-form :model="reviewForm" label-width="100px">
+        <el-form-item label="OA 申请单号">
+          <el-input v-model="reviewForm.oa_number" placeholder="如有对应OA单，请填写" />
+        </el-form-item>
+        <el-form-item label="产生金额(元)">
+          <el-input-number v-model="reviewForm.cost" :min="0" :precision="2" :step="100" style="width: 100%" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showReviewDialog = false">取消</el-button>
+          <el-button type="primary" :loading="reviewSubmitting" @click="submitReview">
+            通过并更新基线
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { Monitor, Plus, Document, Money } from '@element-plus/icons-vue'
 import { api } from '../api'
 import { ElMessage } from 'element-plus'
 
@@ -295,8 +364,21 @@ const assets = ref([])
 const total = ref(0)
 const currentAsset = ref(null)
 const deviceDetail = ref(null)
+const assetEvents = ref([])
 const activeTab = ref('hardware')
 const softSearch = ref('')
+
+const pendingReviewEvent = computed(() => {
+  return assetEvents.value.find(e => e.review_status === 20 && e.event_type === 'hardware_change')
+})
+
+const showReviewDialog = ref(false)
+const reviewSubmitting = ref(false)
+const reviewForm = reactive({
+  event_id: 0,
+  oa_number: '',
+  cost: 0
+})
 
 const query = reactive({
   company_id: '',
@@ -325,6 +407,12 @@ const rules = {
 function statusText(s) {
   const map = { 10: '库存中', 20: '使用中', 30: '维修中', 40: '已报废' }
   return map[s] || '未知'
+}
+
+function formatTime(t) {
+  if (!t) return ''
+  const date = new Date(t)
+  return date.toLocaleString()
 }
 
 function statusTagType(s) {
@@ -361,6 +449,11 @@ async function openAssetDetail(row) {
   drawerVisible.value = true
   drawerLoading.value = true
   try {
+    const [eventsRes] = await Promise.all([
+      api(`/api/v1/assets/${row.id}/events`).catch(() => ({ data: [] }))
+    ])
+    assetEvents.value = eventsRes.data || []
+
     const deviceId = row.device?.device_id || ''
     if (deviceId) {
       const res = await api(`/api/v1/devices/${deviceId}/history?limit=1`)
@@ -374,6 +467,36 @@ async function openAssetDetail(row) {
     console.error('failed to load device detail', err)
   } finally {
     drawerLoading.value = false
+  }
+}
+
+function openReviewDialog(evt) {
+  reviewForm.event_id = evt.id
+  reviewForm.oa_number = ''
+  reviewForm.cost = 0
+  showReviewDialog.value = true
+}
+
+async function submitReview() {
+  if (!currentAsset.value || !reviewForm.event_id) return
+  reviewSubmitting.value = true
+  try {
+    await api(`/api/v1/assets/${currentAsset.value.id}/events/${reviewForm.event_id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        oa_number: reviewForm.oa_number,
+        cost: reviewForm.cost
+      })
+    })
+    ElMessage.success('硬件变更已审核通过，基线已更新')
+    showReviewDialog.value = false
+    // 重新拉取当前资产数据和事件
+    await openAssetDetail(currentAsset.value)
+    fetchAssets() // 刷新外层列表
+  } catch (err) {
+    ElMessage.error(err.message || '审核失败')
+  } finally {
+    reviewSubmitting.value = false
   }
 }
 

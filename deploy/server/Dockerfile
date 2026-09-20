@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# itagent 服务端一体化镜像：web 前端 + Go 服务端 + SQLite 存储
+# open-itam 服务端一体化镜像：web 前端 + Go 服务端
 # 构建全程网络友好：默认走 npmmirror / goproxy.cn，可用 build-arg 改回官方源
 
 # 所有 FROM 引用的 ARG 必须集中在第一个 FROM 之前声明（FROM 只能看到全局 ARG）
@@ -30,24 +30,24 @@ COPY cmd ./cmd
 COPY internal ./internal
 # 把阶段 1 的前端产物放进 embed 目录（internal/server/ui/ui.go 的 //go:embed dist）
 COPY --from=web /build/dist ./internal/server/ui/dist
-RUN GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/itagent-server ./cmd/server
+RUN GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/open-itam-server ./cmd/server
 
 # ---------- 阶段 3: 运行时（Debian 13 trixie，与 VM OS 同系） ----------
 FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin itagent
+    && useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin open-itam
 
 WORKDIR /app
-COPY --from=gobuild /out/itagent-server /app/itagent-server
+COPY --from=gobuild /out/open-itam-server /app/open-itam-server
 # 镜像内置一份默认配置，compose 会用 ./configs/server.json 挂载覆盖它
 COPY configs/server.json /app/configs/server.json
-RUN mkdir -p /app/data && chown -R itagent:itagent /app
+RUN mkdir -p /app/data && chown -R open-itam:open-itam /app
 
-USER itagent
+USER open-itam
 EXPOSE 8443
 VOLUME ["/app/data"]
 
-ENTRYPOINT ["/app/itagent-server"]
+ENTRYPOINT ["/app/open-itam-server"]
 CMD ["-config", "configs/server.json"]

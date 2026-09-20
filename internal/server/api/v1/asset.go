@@ -3,6 +3,7 @@ package v1
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"itagent/internal/server/model"
@@ -19,7 +20,38 @@ func RegisterAssetRoutes(r *gin.RouterGroup) {
 		assets.GET("", h.List)
 		assets.POST("", h.Create)
 		assets.GET("/:id", h.Get)
+		assets.GET("/:id/events", h.ListEvents)
+		assets.GET("/:id/versions", h.ListVersions)
+		assets.POST("/:id/events/:event_id/approve", h.ApproveEvent)
 	}
+}
+
+func (h *AssetHandler) ListEvents(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 40002, "invalid asset id")
+		return
+	}
+	var events []model.AssetEvent
+	if err := store.DB.Preload("Operator").Where("asset_id = ?", id).Order("created_at desc").Find(&events).Error; err != nil {
+		Fail(c, http.StatusInternalServerError, 50001, "failed to query events")
+		return
+	}
+	Success(c, events)
+}
+
+func (h *AssetHandler) ListVersions(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 40002, "invalid asset id")
+		return
+	}
+	var versions []model.AssetVersion
+	if err := store.DB.Preload("ApprovedBy").Where("asset_id = ?", id).Order("version desc").Find(&versions).Error; err != nil {
+		Fail(c, http.StatusInternalServerError, 50001, "failed to query versions")
+		return
+	}
+	Success(c, versions)
 }
 
 type ListAssetQuery struct {
@@ -143,4 +175,74 @@ func (h *AssetHandler) Get(c *gin.Context) {
 	}
 
 	Success(c, asset)
+}
+
+func (h *AssetHandler) ApproveEvent(c *gin.Context) {
+	assetID, err1 := strconv.ParseUint(c.Param("id"), 10, 64)
+	eventID, err2 := strconv.ParseUint(c.Param("event_id"), 10, 64)
+	if err1 != nil || err2 != nil {
+		Fail(c, http.StatusBadRequest, 40002, "invalid id")
+		return
+	}
+
+	var req struct {
+		OANumber string  `json:"oa_number"`
+		Cost     float64 `json:"cost"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	var event model.AssetEvent
+	if err := store.DB.First(&event, eventID).Error; err != nil {
+		Fail(c, http.StatusNotFound, 40401, "event not found")
+		return
+	}
+
+	if event.AssetID != int64(assetID) {
+		Fail(c, http.StatusBadRequest, 40003, "event does not belong to this asset")
+		return
+	}
+
+	if event.ReviewStatus != 20 {
+		Fail(c, http.StatusBadRequest, 40004, "event is not in pending review status")
+		return
+	}
+
+	// 审批通过，更新基线
+	var asset model.Asset
+	if err := store.DB.First(&asset, assetID).Error; err != nil {
+		Fail(c, http.StatusInternalServerError, 50001, "asset not found")
+		return
+	}
+
+	desc := event.Description
+	snapIdx := strings.LastIndex(desc, "当前快照: ")
+	if snapIdx == -1 {
+		Fail(c, http.StatusInternalServerError, 50002, "cannot find hardware snapshot in event")
+		return
+	}
+	hwSnapshot := desc[snapIdx+len("当前快照: "):]
+
+	asset.CurrentVersion += 1
+	store.DB.Save(&asset)
+
+	// UserID from JWT token 
+	var opID *int64
+	// In a real implementation we would extract from Context, e.g.:
+	// if val, exists := c.Get("userID"); exists { ... }
+
+	newVer := model.AssetVersion{
+		AssetID:          asset.ID,
+		Version:          asset.CurrentVersion,
+		HardwareSnapshot: hwSnapshot,
+		ChangeReason:     "硬件配置变更审批通过",
+		ApprovedByID:     opID,
+	}
+	store.DB.Create(&newVer)
+
+	event.ReviewStatus = 10 // 已完成
+	event.OANumber = req.OANumber
+	event.Cost = req.Cost
+	store.DB.Save(&event)
+
+	Success(c, gin.H{"message": "approved"})
 }
