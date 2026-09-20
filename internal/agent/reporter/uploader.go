@@ -29,7 +29,12 @@ type Uploader struct {
 
 func NewUploader(primary, backup, deviceID, token string, client *http.Client) *Uploader {
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				Proxy: nil, // 局域网/企业内网请求直连，避免被系统 HTTP 代理劫持
+			},
+		}
 	}
 	return &Uploader{
 		primary:       primary,
