@@ -27,6 +27,9 @@ func SetupRouter() *gin.Engine {
 		{
 			v1.RegisterCompanyRoutes(protected)
 			v1.RegisterAssetRoutes(protected)
+			v1.RegisterAssetRepairRoutes(protected)
+			v1.RegisterStorageLendingRoutes(protected)
+			v1.RegisterPartRecordRoutes(protected)
 			v1.RegisterUserRoutes(protected)
 		}
 	}

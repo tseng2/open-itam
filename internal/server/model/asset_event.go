@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // AssetEvent 记录资产全生命周期事件（如调拨、维修、硬件升级、报废变更等）
 type AssetEvent struct {
 	BaseModel
@@ -10,9 +12,18 @@ type AssetEvent struct {
 	Description  string  `gorm:"type:text" json:"description"`                      // 详情或变化前后的JSON对比
 	Cost         float64 `gorm:"type:decimal(10,2)" json:"cost"`                    // 维修或配件增减产生的金额
 	OANumber     string  `gorm:"type:varchar(64)" json:"oa_number"`                 // 关联的OA申请单号
-	ReviewStatus int     `gorm:"default:10;index;not null" json:"review_status"`    // 审核状态 (10:已完成/无需审核, 20:待审核, 30:已驳回)
-	OperatorID   *int64  `gorm:"index" json:"operator_id"`                          // 操作人员或IT管理员ID
-	Operator     *User   `gorm:"foreignKey:OperatorID" json:"operator,omitempty"`
+	// 履历与配件流转详情
+	TargetPerson   string     `gorm:"type:varchar(64)" json:"target_person"`              // 领用/责任人员
+	PartType       string     `gorm:"type:varchar(32)" json:"part_type"`                  // 配件类别（内存/硬盘/显卡/外设等）
+	PartModel      string     `gorm:"type:varchar(128)" json:"part_model"`                // 配件规格型号
+	Quantity       int        `gorm:"default:1" json:"quantity"`                          // 数量
+	LockerLocation string     `gorm:"type:varchar(64)" json:"locker_location"`            // IT储物柜位置
+	WarrantyExpiry *time.Time `json:"warranty_expiry"`                                    // 维修质保截止日期
+	ReturnDate     *time.Time `json:"return_date"`                                        // 待归还日期
+	NetValue       float64    `gorm:"type:decimal(10,2)" json:"net_value"`                // 发生时净值
+	ReviewStatus   int        `gorm:"default:10;index;not null" json:"review_status"`      // 审核状态 (10:已完成/无需审核, 20:待审核, 30:已驳回)
+	OperatorID     *int64     `gorm:"index" json:"operator_id"`                            // 操作人员或IT管理员ID
+	Operator       *User      `gorm:"foreignKey:OperatorID" json:"operator,omitempty"`
 }
 
 func (AssetEvent) TableName() string {

@@ -51,6 +51,10 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.Handle("/api/v1/companies/", ginEngine)
 	h.mux.Handle("/api/v1/users", ginEngine)
 	h.mux.Handle("/api/v1/users/", ginEngine)
+	h.mux.Handle("/api/v1/storage-lendings", ginEngine)
+	h.mux.Handle("/api/v1/storage-lendings/", ginEngine)
+	h.mux.Handle("/api/v1/part-records", ginEngine)
+	h.mux.Handle("/api/v1/part-records/", ginEngine)
 	h.mux.Handle("/api/v1/agent/heartbeat", ginEngine)
 
 	return h
@@ -354,8 +358,10 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 			ModelName:    modelName,
 			SerialNumber: sn,
 			UserID:       userID,
-			Remark:       "计算机名称: " + full.Hostname + " (由 Agent 自动采集关联，待补充固定资产编码与U8单号)",
+			Remark:       "计算机名称: " + full.Hostname + " (由 Agent 自动采集关联，待补充固定资产编码)",
 		}
+		// 新资产直接以采集值初始化账面规格，后续以人工维护为准
+		applyAssetBookSpecs(&asset, &full.Hardware, primaryMAC)
 		if err := store.DB.Create(&asset).Error; err == nil {
 			event := model.AssetEvent{
 				AssetID:     asset.ID,
@@ -368,9 +374,17 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 		}
 	} else {
 		// 已存在资产，更新当前使用人与状态
+		dirty := false
 		if userID != nil && (asset.UserID == nil || *asset.UserID != *userID) {
 			asset.UserID = userID
 			asset.Status = 20
+			dirty = true
+		}
+		// 账面规格为空时以采集值回填；人工已维护的字段保持不动
+		if applyAssetBookSpecs(&asset, &full.Hardware, primaryMAC) {
+			dirty = true
+		}
+		if dirty {
 			store.DB.Save(&asset)
 		}
 	}
@@ -486,6 +500,51 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 			}
 		}
 	}
+}
+
+// applyAssetBookSpecs 用 Agent 采集值填充资产的账面硬件规格。
+// 只写入仍为空的字段，返回是否有改动：账面值以人工台账维护为准，采集仅负责初始化
+func applyAssetBookSpecs(asset *model.Asset, hw *protocol.Hardware, primaryMAC string) bool {
+	dirty := false
+	if asset.CPUName == "" && len(hw.CPU) > 0 {
+		asset.CPUName = hw.CPU[0].Model
+		dirty = true
+	}
+	if asset.MemorySize == "" && hw.MemoryTotalMB > 0 {
+		asset.MemorySize = fmt.Sprintf("%dG", hw.MemoryTotalMB/1024)
+		dirty = true
+	}
+	// 跳过 U 盘等可移动介质，仅落内置磁盘
+	var fixedDisks []protocol.Disk
+	for _, d := range hw.Disks {
+		if !d.Removable {
+			fixedDisks = append(fixedDisks, d)
+		}
+	}
+	formatDisk := func(d protocol.Disk) string {
+		t := strings.TrimSpace(d.Type)
+		if t == "" {
+			return fmt.Sprintf("%dG", d.SizeGB)
+		}
+		return fmt.Sprintf("%dG %s", d.SizeGB, t)
+	}
+	if asset.MainDisk == "" && len(fixedDisks) > 0 {
+		asset.MainDisk = formatDisk(fixedDisks[0])
+		dirty = true
+	}
+	if asset.SecondaryDisk == "" && len(fixedDisks) > 1 {
+		asset.SecondaryDisk = formatDisk(fixedDisks[1])
+		dirty = true
+	}
+	if asset.GPUName == "" && len(hw.GPUs) > 0 {
+		asset.GPUName = hw.GPUs[0].Model
+		dirty = true
+	}
+	if asset.MACAddress == "" && primaryMAC != "" {
+		asset.MACAddress = primaryMAC
+		dirty = true
+	}
+	return dirty
 }
 
 func (h *Handler) saveEvents(ctx context.Context, deviceID string, events []alert.Event) {

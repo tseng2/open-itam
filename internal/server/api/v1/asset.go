@@ -20,6 +20,7 @@ func RegisterAssetRoutes(r *gin.RouterGroup) {
 		assets.GET("", h.List)
 		assets.POST("", h.Create)
 		assets.GET("/:id", h.Get)
+		assets.PUT("/:id", h.Update)
 		assets.GET("/:id/events", h.ListEvents)
 		assets.GET("/:id/versions", h.ListVersions)
 		assets.POST("/:id/events/:event_id/approve", h.ApproveEvent)
@@ -104,18 +105,35 @@ func (h *AssetHandler) List(c *gin.Context) {
 }
 
 type CreateAssetRequest struct {
-	CompanyID    int64      `json:"company_id" binding:"required"`
-	CategoryID   int64      `json:"category_id" binding:"required"`
-	AssetTag     string     `json:"asset_tag" binding:"required"`
-	U8OrderNo    string     `json:"u8_order_no"`
-	UserID       *int64     `json:"user_id"`
-	Status       int        `json:"status"`
-	Brand        string     `json:"brand"`
-	ModelName    string     `json:"model"`
-	SerialNumber string     `json:"serial_number"`
-	PurchaseDate *time.Time `json:"purchase_date"`
-	Price        float64    `json:"price"`
-	Remark       string     `json:"remark"`
+	CompanyID      int64      `json:"company_id" binding:"required"`
+	CenterName     string     `json:"center_name"`
+	DepartmentName string     `json:"department_name"`
+	DepartmentSub  string     `json:"department_sub"`
+	Location       string     `json:"location"`
+	ManagerName    string     `json:"manager_name"`
+	CategoryID     int64      `json:"category_id" binding:"required"`
+	CategoryName   string     `json:"category_name"`
+	AssetTag       string     `json:"asset_tag" binding:"required"`
+	U8OrderNo      string     `json:"u8_order_no"`
+	UserID         *int64     `json:"user_id"`
+	Status         int        `json:"status"`
+	Brand          string     `json:"brand"`
+	ModelName      string     `json:"model"`
+	SerialNumber   string     `json:"serial_number"`
+	CPUName        string     `json:"cpu_name"`
+	MemorySize     string     `json:"memory_size"`
+	MainDisk       string     `json:"main_disk"`
+	SecondaryDisk  string     `json:"secondary_disk"`
+	GPUName        string     `json:"gpu_name"`
+	MACAddress     string     `json:"mac_address"`
+	PurchaseDate   *time.Time `json:"purchase_date"`
+	Acceptor       string     `json:"acceptor"`
+	WarrantyPeriod string     `json:"warranty_period"`
+	OriginalPrice  float64    `json:"original_price"`
+	Price          float64    `json:"price"` // 兼容旧参数名
+	NetValue       float64    `json:"net_value"`
+	SecEncrypted   bool       `json:"sec_encrypted"`
+	Remark         string     `json:"remark"`
 }
 
 func (h *AssetHandler) Create(c *gin.Context) {
@@ -128,20 +146,40 @@ func (h *AssetHandler) Create(c *gin.Context) {
 	if req.Status == 0 {
 		req.Status = 10 // 默认为库存中
 	}
+	price := req.OriginalPrice
+	if price == 0 && req.Price > 0 {
+		price = req.Price
+	}
 
 	asset := model.Asset{
-		CompanyID:    req.CompanyID,
-		CategoryID:   req.CategoryID,
-		AssetTag:     req.AssetTag,
-		U8OrderNo:    req.U8OrderNo,
-		UserID:       req.UserID,
-		Status:       req.Status,
-		Brand:        req.Brand,
-		ModelName:    req.ModelName,
-		SerialNumber: req.SerialNumber,
-		PurchaseDate: req.PurchaseDate,
-		Price:        req.Price,
-		Remark:       req.Remark,
+		CompanyID:      req.CompanyID,
+		CenterName:     req.CenterName,
+		DepartmentName: req.DepartmentName,
+		DepartmentSub:  req.DepartmentSub,
+		Location:       req.Location,
+		ManagerName:    req.ManagerName,
+		CategoryID:     req.CategoryID,
+		CategoryName:   req.CategoryName,
+		AssetTag:       req.AssetTag,
+		U8OrderNo:      req.U8OrderNo,
+		UserID:         req.UserID,
+		Status:         req.Status,
+		Brand:          req.Brand,
+		ModelName:      req.ModelName,
+		SerialNumber:   req.SerialNumber,
+		CPUName:        req.CPUName,
+		MemorySize:     req.MemorySize,
+		MainDisk:       req.MainDisk,
+		SecondaryDisk:  req.SecondaryDisk,
+		GPUName:        req.GPUName,
+		MACAddress:     req.MACAddress,
+		PurchaseDate:   req.PurchaseDate,
+		Acceptor:       req.Acceptor,
+		WarrantyPeriod: req.WarrantyPeriod,
+		OriginalPrice:  price,
+		NetValue:       req.NetValue,
+		SecEncrypted:   req.SecEncrypted,
+		Remark:         req.Remark,
 	}
 
 	if err := store.DB.Create(&asset).Error; err != nil {
@@ -174,6 +212,129 @@ func (h *AssetHandler) Get(c *gin.Context) {
 		return
 	}
 
+	Success(c, asset)
+}
+
+// UpdateAssetRequest 台账字段维护请求。使用指针类型以区分"未传"与"显式清空"，
+// 保证台账编辑时可以把字段改回空值
+type UpdateAssetRequest struct {
+	CompanyID      *int64     `json:"company_id"`
+	CenterName     *string    `json:"center_name"`
+	DepartmentName *string    `json:"department_name"`
+	DepartmentSub  *string    `json:"department_sub"`
+	Location       *string    `json:"location"`
+	ManagerName    *string    `json:"manager_name"`
+	CategoryID     *int64     `json:"category_id"`
+	CategoryName   *string    `json:"category_name"`
+	AssetTag       *string    `json:"asset_tag"`
+	U8OrderNo      *string    `json:"u8_order_no"`
+	UserID         *int64     `json:"user_id"`
+	Status         *int       `json:"status"`
+	Brand          *string    `json:"brand"`
+	ModelName      *string    `json:"model"`
+	SerialNumber   *string    `json:"serial_number"`
+	CPUName        *string    `json:"cpu_name"`
+	MemorySize     *string    `json:"memory_size"`
+	MainDisk       *string    `json:"main_disk"`
+	SecondaryDisk  *string    `json:"secondary_disk"`
+	GPUName        *string    `json:"gpu_name"`
+	MACAddress     *string    `json:"mac_address"`
+	PurchaseDate   *time.Time `json:"purchase_date"`
+	Acceptor       *string    `json:"acceptor"`
+	WarrantyPeriod *string    `json:"warranty_period"`
+	OriginalPrice  *float64   `json:"original_price"`
+	NetValue       *float64   `json:"net_value"`
+	SecEncrypted   *bool      `json:"sec_encrypted"`
+	Remark         *string    `json:"remark"`
+}
+
+func (h *AssetHandler) Update(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 40002, "invalid asset id")
+		return
+	}
+
+	var asset model.Asset
+	if err := store.DB.First(&asset, id).Error; err != nil {
+		Fail(c, http.StatusNotFound, 40401, "asset not found")
+		return
+	}
+
+	var req UpdateAssetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 40001, err.Error())
+		return
+	}
+
+	updates := map[string]interface{}{}
+	setStr := func(col string, v *string) {
+		if v != nil {
+			updates[col] = *v
+		}
+	}
+	setStr("center_name", req.CenterName)
+	setStr("department_name", req.DepartmentName)
+	setStr("department_sub", req.DepartmentSub)
+	setStr("location", req.Location)
+	setStr("manager_name", req.ManagerName)
+	setStr("category_name", req.CategoryName)
+	setStr("asset_tag", req.AssetTag)
+	setStr("u8_order_no", req.U8OrderNo)
+	setStr("brand", req.Brand)
+	setStr("model", req.ModelName)
+	setStr("serial_number", req.SerialNumber)
+	setStr("cpu_name", req.CPUName)
+	setStr("memory_size", req.MemorySize)
+	setStr("main_disk", req.MainDisk)
+	setStr("secondary_disk", req.SecondaryDisk)
+	setStr("gpu_name", req.GPUName)
+	setStr("mac_address", req.MACAddress)
+	setStr("acceptor", req.Acceptor)
+	setStr("warranty_period", req.WarrantyPeriod)
+	setStr("remark", req.Remark)
+	if req.CompanyID != nil {
+		updates["company_id"] = *req.CompanyID
+	}
+	if req.CategoryID != nil {
+		updates["category_id"] = *req.CategoryID
+	}
+	if req.UserID != nil {
+		if *req.UserID > 0 {
+			updates["user_id"] = *req.UserID
+		} else {
+			updates["user_id"] = nil // 0 表示归还入库，解除领用绑定
+		}
+	}
+	if req.Status != nil {
+		updates["status"] = *req.Status
+	}
+	if req.PurchaseDate != nil {
+		updates["purchase_date"] = *req.PurchaseDate
+	}
+	if req.OriginalPrice != nil {
+		updates["original_price"] = *req.OriginalPrice
+	}
+	if req.NetValue != nil {
+		updates["net_value"] = *req.NetValue
+	}
+	if req.SecEncrypted != nil {
+		updates["sec_encrypted"] = *req.SecEncrypted
+	}
+
+	if len(updates) == 0 {
+		Success(c, asset)
+		return
+	}
+	if err := store.DB.Model(&asset).Updates(updates).Error; err != nil {
+		Fail(c, http.StatusInternalServerError, 50003, "failed to update asset: "+err.Error())
+		return
+	}
+
+	if err := store.DB.Preload("Company").Preload("User").First(&asset, id).Error; err != nil {
+		Fail(c, http.StatusInternalServerError, 50001, "failed to reload asset")
+		return
+	}
 	Success(c, asset)
 }
 

@@ -6,7 +6,7 @@
         <span class="subtitle">集团 IT 实物资产档案与生命周期追踪（支持点击行查阅 Agent 采集硬件与软件清单）</span>
       </div>
       <div class="actions">
-        <el-button type="primary" @click="showAddDialog = true">
+        <el-button type="primary" @click="openCreateDialog">
           <el-icon><Plus /></el-icon> 资产登记
         </el-button>
       </div>
@@ -24,15 +24,6 @@
               :value="item.id"
             />
           </el-select>
-        </el-form-item>
-
-        <el-form-item label="U8 采购订单号">
-          <el-input
-            v-model="query.u8_order_no"
-            placeholder="如: PO-202603..."
-            clearable
-            style="width: 170px"
-          />
         </el-form-item>
 
         <el-form-item label="固定资产编码/条码">
@@ -82,10 +73,13 @@
             <el-tag size="small" effect="plain">{{ row.company?.name || '未指定' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="品类 / 规格" min-width="180">
+        <el-table-column label="品类 / 规格" min-width="200">
           <template #default="{ row }">
             <div><strong>{{ row.brand }}</strong> {{ row.model }}</div>
             <div class="sub-text">SN: {{ row.serial_number || '-' }}</div>
+            <div class="sub-text" v-if="row.cpu_name || row.memory_size">
+              {{ [row.cpu_name, row.memory_size].filter(Boolean).join(' / ') }}
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="关联采集终端 (Agent)" min-width="160">
@@ -98,14 +92,6 @@
               <div class="sub-text" v-if="row.device.public_ip">公网IP: {{ row.device.public_ip }}</div>
             </div>
             <span v-else class="empty-cell">未关联终端</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="u8_order_no" label="用友 U8 订单号" min-width="140">
-          <template #default="{ row }">
-            <el-tag v-if="row.u8_order_no" type="success" size="small" effect="light">
-              {{ row.u8_order_no }}
-            </el-tag>
-            <span v-else class="empty-cell">-</span>
           </template>
         </el-table-column>
         <el-table-column prop="user.real_name" label="领用人" min-width="120">
@@ -156,6 +142,12 @@
       destroy-on-close
     >
       <div v-if="currentAsset" v-loading="drawerLoading">
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px">
+          <el-button type="primary" plain size="small" @click="openEditDialog">
+            <el-icon><Edit /></el-icon> 编辑台账
+          </el-button>
+        </div>
+
         <el-alert
           v-if="pendingReviewEvent"
           title="发现未审核的硬件配置变更！"
@@ -177,13 +169,26 @@
             <strong style="color: #2563eb">{{ currentAsset.asset_tag }}</strong>
           </el-descriptions-item>
           <el-descriptions-item label="用友 U8 采购单号">
-            {{ currentAsset.u8_order_no || '暂未绑定' }}
+            <el-tag v-if="currentAsset.u8_order_no" type="success" size="small">{{ currentAsset.u8_order_no }}</el-tag>
+            <span v-else class="empty-cell">未绑定U8采购单</span>
           </el-descriptions-item>
-          <el-descriptions-item label="归属公司">
-            {{ currentAsset.company?.name || '默认公司' }}
+          <el-descriptions-item label="归属公司 / 中心">
+            {{ currentAsset.company?.name || '默认公司' }} <span v-if="currentAsset.center_name">/ {{ currentAsset.center_name }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="部门">
+            {{ currentAsset.department_name || '-' }}<span v-if="currentAsset.department_sub">（{{ currentAsset.department_sub }}）</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="主要存放位置或用途">
+            {{ currentAsset.location || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="资产负责人">
+            {{ currentAsset.manager_name || '-' }}
           </el-descriptions-item>
           <el-descriptions-item label="当前领用人">
             {{ currentAsset.user?.real_name || '未分配/在库' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="品牌与型号规格">
+            <strong>{{ currentAsset.brand }}</strong> {{ currentAsset.model }}
           </el-descriptions-item>
           <el-descriptions-item label="出厂序列号 (SN)">
             {{ currentAsset.serial_number || '-' }}
@@ -191,6 +196,41 @@
           <el-descriptions-item label="关联计算机名">
             <el-tag size="small" type="success">{{ currentAsset.device?.hostname || currentAsset.asset_tag }}</el-tag>
           </el-descriptions-item>
+          <el-descriptions-item label="购入时间">
+            {{ formatDate(currentAsset.purchase_date) || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="已使用月数">
+            {{ usedMonths(currentAsset.purchase_date) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="验收人">
+            {{ currentAsset.acceptor || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="保修期">
+            {{ currentAsset.warranty_period || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="原值（不含税）">
+            {{ currentAsset.original_price ? '￥' + currentAsset.original_price.toFixed(2) : '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="净值">
+            {{ currentAsset.net_value ? '￥' + currentAsset.net_value.toFixed(2) : '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="加密软件管理">
+            <el-tag :type="currentAsset.sec_encrypted ? 'success' : 'info'" size="small">
+              {{ currentAsset.sec_encrypted ? '已纳管（绿盾）' : '否' }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="备注">
+            {{ currentAsset.remark || '-' }}
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <el-descriptions title="账面硬件规格（台账维护值，Agent 采集值见硬件明细）" :column="2" border style="margin-bottom: 20px">
+          <el-descriptions-item label="CPU 名称">{{ currentAsset.cpu_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="内存">{{ currentAsset.memory_size || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="主硬盘">{{ currentAsset.main_disk || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="从硬盘">{{ currentAsset.secondary_disk || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="显卡名称">{{ currentAsset.gpu_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="网卡 MAC 地址">{{ currentAsset.mac_address || '-' }}</el-descriptions-item>
         </el-descriptions>
 
         <el-tabs v-model="activeTab">
@@ -277,50 +317,321 @@
               <el-empty v-if="assetEvents.length === 0" description="暂无履历记录" />
             </el-timeline>
           </el-tab-pane>
+
+          <!-- 外寄维修记录 -->
+          <el-tab-pane :label="`外寄维修记录 (${assetRepairs.length})`" name="repairs">
+            <div style="margin: 12px 0">
+              <el-button type="primary" size="small" @click="openRepairDialog">
+                <el-icon><Plus /></el-icon> 登记送修
+              </el-button>
+            </div>
+            <el-table :data="assetRepairs" border>
+              <el-table-column label="寄修日期" width="110">
+                <template #default="{ row }">{{ formatDate(row.send_date) || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="vendor" label="维修厂商" width="100" />
+              <el-table-column prop="user_name" label="使用人" width="110" />
+              <el-table-column prop="fault_reason" label="故障原因" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="oa_number" label="OA单号" width="110">
+                <template #default="{ row }">{{ row.oa_number || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="状态" width="90" align="center">
+                <template #default="{ row }">
+                  <el-tag :type="repairStatusTag(row.status)" size="small">{{ repairStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="寄回日期" width="110">
+                <template #default="{ row }">{{ formatDate(row.return_date) || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="result" label="维修结果" min-width="180" show-overflow-tooltip />
+              <el-table-column label="操作" width="110" fixed="right">
+                <template #default="{ row }">
+                  <el-button
+                    v-if="row.status === 'repairing'"
+                    link type="primary" size="small"
+                    @click="openReturnDialog(row)"
+                  >登记寄回</el-button>
+                </template>
+              </el-table-column>
+              <template #empty><el-empty description="暂无外寄维修记录" /></template>
+            </el-table>
+          </el-tab-pane>
         </el-tabs>
       </div>
     </el-drawer>
 
-    <!-- 新增资产对话框 -->
-    <el-dialog v-model="showAddDialog" title="人工登记固定资产档案" width="560px" destroy-on-close>
-      <el-form :model="form" :rules="rules" ref="formRef" label-width="130px">
-        <el-form-item label="所属公司" prop="company_id">
-          <el-select v-model="form.company_id" placeholder="请选择归属子公司" style="width: 100%">
-            <el-option
-              v-for="item in companies"
-              :key="item.id"
-              :label="item.name"
-              :value="item.id"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="资产分类" prop="category_id">
-          <el-select v-model="form.category_id" placeholder="分类" style="width: 100%">
-            <el-option label="台式整机" :value="1" />
-            <el-option label="笔记本电脑" :value="2" />
-            <el-option label="显示器" :value="3" />
-            <el-option label="外设及其他" :value="4" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="固定资产编码" prop="asset_tag">
-          <el-input v-model="form.asset_tag" placeholder="如: ITAM-2026-0001 (贴于外壳的资产标签号)" />
-        </el-form-item>
-        <el-form-item label="用友 U8 订单号" prop="u8_order_no">
-          <el-input v-model="form.u8_order_no" placeholder="如: PO-202603001" />
-        </el-form-item>
-        <el-form-item label="品牌与型号" required>
-          <div style="display: flex; gap: 8px; width: 100%">
-            <el-input v-model="form.brand" placeholder="品牌 (如: Lenovo)" style="width: 40%" />
-            <el-input v-model="form.model" placeholder="型号规格" style="width: 60%" />
-          </div>
-        </el-form-item>
-        <el-form-item label="出厂序列号 SN">
-          <el-input v-model="form.serial_number" placeholder="硬件出厂序列号，用于与Agent自动绑定" />
+    <!-- 登记 / 编辑资产对话框 -->
+    <el-dialog
+      v-model="showAddDialog"
+      :title="editMode ? '编辑固定资产台账' : '人工登记固定资产档案'"
+      width="780px"
+      destroy-on-close
+    >
+      <el-form :model="form" :rules="rules" ref="formRef" label-width="120px">
+        <el-divider content-position="left">基本档案</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="所属公司" prop="company_id">
+              <el-select v-model="form.company_id" placeholder="请选择归属子公司" style="width: 100%">
+                <el-option
+                  v-for="item in companies"
+                  :key="item.id"
+                  :label="item.name"
+                  :value="item.id"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="资产分类" prop="category_id">
+              <el-select v-model="form.category_id" placeholder="分类" style="width: 100%">
+                <el-option label="台式整机" :value="1" />
+                <el-option label="笔记本电脑" :value="2" />
+                <el-option label="显示器" :value="3" />
+                <el-option label="外设及其他" :value="4" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="固定资产编码" prop="asset_tag">
+              <el-input v-model="form.asset_tag" placeholder="如: SSA-G-202506-DJ0085" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="使用状态">
+              <el-select v-model="form.status" style="width: 100%">
+                <el-option label="库存中" :value="10" />
+                <el-option label="使用中" :value="20" />
+                <el-option label="维修中" :value="30" />
+                <el-option label="已报废" :value="40" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="品牌">
+              <el-input v-model="form.brand" placeholder="如: 联想 / DELL / 苹果" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="型号规格">
+              <el-input v-model="form.model" placeholder="如: ThinkPad E490" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="出厂序列号 SN">
+              <el-input v-model="form.serial_number" placeholder="硬件出厂序列号，用于与Agent自动绑定" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">归属与位置</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="中心">
+              <el-input v-model="form.center_name" placeholder="如: 项目中心 / 研发中心" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="部门">
+              <el-input v-model="form.department_name" placeholder="如: 华东部" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="部门（完整路径）">
+              <el-input v-model="form.department_sub" placeholder="如: 公司/华东部/项目三课" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="存放位置或用途">
+              <el-input v-model="form.location" placeholder="主要存放位置或用途" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="资产负责人">
+              <el-input v-model="form.manager_name" placeholder="资产负责人姓名" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">账面硬件规格（无 Agent 终端手工维护）</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="CPU 名称">
+              <el-input v-model="form.cpu_name" placeholder="如: i5-8250U" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="内存">
+              <el-input v-model="form.memory_size" placeholder="如: 16G" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="主硬盘">
+              <el-input v-model="form.main_disk" placeholder="如: 512G SSD" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="从硬盘">
+              <el-input v-model="form.secondary_disk" placeholder="如: 1TB" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="显卡名称">
+              <el-input v-model="form.gpu_name" placeholder="如: RTX 3060" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="网卡 MAC">
+              <el-input v-model="form.mac_address" placeholder="如: 3C:52:82:xx:xx:xx" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">采购与财务</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="购入时间">
+              <el-date-picker
+                v-model="form.purchase_date"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="选择购入日期"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="验收人">
+              <el-input v-model="form.acceptor" placeholder="验收人姓名" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="保修期">
+              <el-input v-model="form.warranty_period" placeholder="如: 3年 / 2027-06-25" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="用友 U8 订单号">
+              <el-input v-model="form.u8_order_no" placeholder="如: PO-202603001（仅入台账明细）" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="原值（不含税）">
+              <el-input-number v-model="form.original_price" :min="0" :precision="2" :step="100" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="净值">
+              <el-input-number v-model="form.net_value" :min="0" :precision="2" :step="100" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="加密软件管理">
+              <el-switch v-model="form.sec_encrypted" active-text="已纳管（绿盾）" inactive-text="否" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-form-item label="备注">
+          <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="其他需要说明的信息" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showAddDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitCreate">确认建账</el-button>
+        <el-button type="primary" :loading="submitting" @click="submitCreate">
+          {{ editMode ? '保存台账' : '确认建账' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 外寄维修送修登记对话框 -->
+    <el-dialog v-model="showRepairDialog" title="外寄维修送修登记" width="620px" destroy-on-close>
+      <el-form :model="repairForm" label-width="110px">
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="OA 申请单号">
+              <el-input v-model="repairForm.oa_number" placeholder="如: PUBLIC0939" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="使用人">
+              <el-input v-model="repairForm.user_name" placeholder="送修时使用人，如: IT闲置" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="故障原因">
+              <el-input v-model="repairForm.fault_reason" type="textarea" :rows="2" placeholder="用户反馈的故障现象" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="IT诊断结果">
+              <el-input v-model="repairForm.diagnosis" type="textarea" :rows="2" placeholder="IT 检测结论" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="IT维修建议">
+              <el-input v-model="repairForm.suggestion" type="textarea" :rows="2" placeholder="维修或处置建议" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="维修厂商">
+              <el-input v-model="repairForm.vendor" placeholder="如: 太鲁格" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="寄修日期">
+              <el-date-picker
+                v-model="repairForm.send_date"
+                type="date"
+                value-format="YYYY-MM-DD"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="联系人">
+              <el-input v-model="repairForm.contact_name" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="联系电话">
+              <el-input v-model="repairForm.contact_phone" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="维修金额(元)">
+              <el-input-number v-model="repairForm.cost" :min="0" :precision="2" :step="100" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+      <template #footer>
+        <el-button @click="showRepairDialog = false">取消</el-button>
+        <el-button type="primary" :loading="repairSubmitting" @click="submitRepair">确认送修</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 维修寄回登记对话框 -->
+    <el-dialog v-model="showReturnDialog" title="维修寄回登记" width="480px" destroy-on-close>
+      <el-form :model="returnForm" label-width="100px">
+        <el-form-item label="寄回日期">
+          <el-date-picker
+            v-model="returnForm.return_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="维修结果">
+          <el-input v-model="returnForm.result" type="textarea" :rows="3" placeholder="如: 已维修，需要确认是否还有问题" />
+        </el-form-item>
+        <el-form-item label="维修金额(元)">
+          <el-input-number v-model="returnForm.cost" :min="0" :precision="2" :step="100" style="width: 100%" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showReturnDialog = false">取消</el-button>
+        <el-button type="primary" :loading="returnSubmitting" @click="submitReturn">确认寄回</el-button>
       </template>
     </el-dialog>
 
@@ -348,13 +659,14 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { Monitor, Plus, Document, Money } from '@element-plus/icons-vue'
+import { Monitor, Plus, Document, Money, Edit } from '@element-plus/icons-vue'
 import { api } from '../api'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
 const submitting = ref(false)
 const showAddDialog = ref(false)
+const editMode = ref(false)
 const drawerVisible = ref(false)
 const drawerLoading = ref(false)
 const formRef = ref(null)
@@ -365,8 +677,14 @@ const total = ref(0)
 const currentAsset = ref(null)
 const deviceDetail = ref(null)
 const assetEvents = ref([])
+const assetRepairs = ref([])
 const activeTab = ref('hardware')
 const softSearch = ref('')
+
+const showRepairDialog = ref(false)
+const repairSubmitting = ref(false)
+const showReturnDialog = ref(false)
+const returnSubmitting = ref(false)
 
 const pendingReviewEvent = computed(() => {
   return assetEvents.value.find(e => e.review_status === 20 && e.event_type === 'hardware_change')
@@ -382,7 +700,6 @@ const reviewForm = reactive({
 
 const query = reactive({
   company_id: '',
-  u8_order_no: '',
   asset_tag: '',
   status: '',
   page: 1,
@@ -390,13 +707,54 @@ const query = reactive({
 })
 
 const form = reactive({
+  id: 0,
   company_id: '',
   category_id: 1,
+  category_name: '',
   asset_tag: '',
-  u8_order_no: '',
+  status: 10,
   brand: '',
   model: '',
   serial_number: '',
+  center_name: '',
+  department_name: '',
+  department_sub: '',
+  location: '',
+  manager_name: '',
+  cpu_name: '',
+  memory_size: '',
+  main_disk: '',
+  secondary_disk: '',
+  gpu_name: '',
+  mac_address: '',
+  purchase_date: '',
+  acceptor: '',
+  warranty_period: '',
+  u8_order_no: '',
+  original_price: 0,
+  net_value: 0,
+  sec_encrypted: false,
+  remark: '',
+})
+
+const repairForm = reactive({
+  oa_number: '',
+  user_name: '',
+  fault_reason: '',
+  diagnosis: '',
+  suggestion: '',
+  vendor: '',
+  contact_name: '',
+  contact_phone: '',
+  send_date: '',
+  cost: 0,
+})
+
+const returnForm = reactive({
+  repair_id: 0,
+  return_date: '',
+  result: '',
+  cost: 0,
 })
 
 const rules = {
@@ -415,6 +773,33 @@ function formatTime(t) {
   return date.toLocaleString()
 }
 
+function formatDate(t) {
+  if (!t) return ''
+  const date = new Date(t)
+  if (isNaN(date.getTime())) return ''
+  return date.toISOString().slice(0, 10)
+}
+
+// 台账"已使用月数"为购入时间的派生计算列，不入库
+function usedMonths(purchaseDate) {
+  if (!purchaseDate) return '-'
+  const start = new Date(purchaseDate)
+  if (isNaN(start.getTime())) return '-'
+  const now = new Date()
+  const months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth())
+  return months < 0 ? '0 个月' : `${months} 个月`
+}
+
+function repairStatusText(s) {
+  const map = { repairing: '寄修中', returned: '已寄回', scrapped: '已报废' }
+  return map[s] || s || '未知'
+}
+
+function repairStatusTag(s) {
+  const map = { repairing: 'warning', returned: 'success', scrapped: 'danger' }
+  return map[s] || 'info'
+}
+
 function statusTagType(s) {
   const map = { 10: 'info', 20: 'success', 30: 'warning', 40: 'danger' }
   return map[s] || ''
@@ -422,13 +807,32 @@ function statusTagType(s) {
 
 const formatCPUs = computed(() => {
   const cpus = deviceDetail.value?.hardware?.cpu || []
-  return cpus.map(c => `${c.model} (${c.cores}核/${c.threads}线程)`).join('; ') || 'i3-8100 3.60GHz'
+  if (cpus.length > 0) {
+    return cpus.map(c => `${c.model} (${c.cores}核/${c.threads}线程)`).join('; ')
+  }
+  // 终端尚未在线采集时，依次回退到设备摘要与台账账面规格
+  if (currentAsset.value?.device?.cpu_model) {
+    return currentAsset.value.device.cpu_model
+  }
+  if (currentAsset.value?.cpu_name) {
+    return currentAsset.value.cpu_name + '（台账账面值）'
+  }
+  return '暂无数据 (终端未采集)'
 })
 
 const formatMemory = computed(() => {
   const mb = deviceDetail.value?.hardware?.memory_total_mb
-  if (!mb) return '16 GB'
-  return `${(mb / 1024).toFixed(1)} GB`
+  if (mb) {
+    return `${(mb / 1024).toFixed(1)} GB`
+  }
+  // 终端尚未在线采集时，依次回退到设备摘要与台账账面规格
+  if (currentAsset.value?.device?.memory_total_gb) {
+    return `${currentAsset.value.device.memory_total_gb} GB`
+  }
+  if (currentAsset.value?.memory_size) {
+    return currentAsset.value.memory_size + '（台账账面值）'
+  }
+  return '暂无数据'
 })
 
 const filteredSoftware = computed(() => {
@@ -449,10 +853,12 @@ async function openAssetDetail(row) {
   drawerVisible.value = true
   drawerLoading.value = true
   try {
-    const [eventsRes] = await Promise.all([
-      api(`/api/v1/assets/${row.id}/events`).catch(() => ({ data: [] }))
+    const [eventsRes, repairsRes] = await Promise.all([
+      api(`/api/v1/assets/${row.id}/events`).catch(() => ({ data: [] })),
+      api(`/api/v1/assets/${row.id}/repairs`).catch(() => ({ data: [] }))
     ])
     assetEvents.value = eventsRes.data || []
+    assetRepairs.value = repairsRes.data || []
 
     const deviceId = row.device?.device_id || ''
     if (deviceId) {
@@ -467,6 +873,144 @@ async function openAssetDetail(row) {
     console.error('failed to load device detail', err)
   } finally {
     drawerLoading.value = false
+  }
+}
+
+function resetForm() {
+  Object.assign(form, {
+    id: 0,
+    company_id: '',
+    category_id: 1,
+    category_name: '',
+    asset_tag: '',
+    status: 10,
+    brand: '',
+    model: '',
+    serial_number: '',
+    center_name: '',
+    department_name: '',
+    department_sub: '',
+    location: '',
+    manager_name: '',
+    cpu_name: '',
+    memory_size: '',
+    main_disk: '',
+    secondary_disk: '',
+    gpu_name: '',
+    mac_address: '',
+    purchase_date: '',
+    acceptor: '',
+    warranty_period: '',
+    u8_order_no: '',
+    original_price: 0,
+    net_value: 0,
+    sec_encrypted: false,
+    remark: '',
+  })
+}
+
+function openCreateDialog() {
+  resetForm()
+  editMode.value = false
+  showAddDialog.value = true
+}
+
+// 编辑台账：以当前资产数据回填表单，保存走 PUT 更新接口
+function openEditDialog() {
+  if (!currentAsset.value) return
+  const a = currentAsset.value
+  resetForm()
+  Object.assign(form, {
+    id: a.id,
+    company_id: a.company_id,
+    category_id: a.category_id,
+    category_name: a.category_name || '',
+    asset_tag: a.asset_tag,
+    status: a.status,
+    brand: a.brand || '',
+    model: a.model || '',
+    serial_number: a.serial_number || '',
+    center_name: a.center_name || '',
+    department_name: a.department_name || '',
+    department_sub: a.department_sub || '',
+    location: a.location || '',
+    manager_name: a.manager_name || '',
+    cpu_name: a.cpu_name || '',
+    memory_size: a.memory_size || '',
+    main_disk: a.main_disk || '',
+    secondary_disk: a.secondary_disk || '',
+    gpu_name: a.gpu_name || '',
+    mac_address: a.mac_address || '',
+    purchase_date: formatDate(a.purchase_date),
+    acceptor: a.acceptor || '',
+    warranty_period: a.warranty_period || '',
+    u8_order_no: a.u8_order_no || '',
+    original_price: a.original_price || 0,
+    net_value: a.net_value || 0,
+    sec_encrypted: !!a.sec_encrypted,
+    remark: a.remark || '',
+  })
+  editMode.value = true
+  showAddDialog.value = true
+}
+
+function openRepairDialog() {
+  Object.assign(repairForm, {
+    oa_number: '', user_name: currentAsset.value?.user?.real_name || '',
+    fault_reason: '', diagnosis: '', suggestion: '', vendor: '',
+    contact_name: '', contact_phone: '', send_date: '', cost: 0,
+  })
+  showRepairDialog.value = true
+}
+
+async function submitRepair() {
+  if (!currentAsset.value) return
+  repairSubmitting.value = true
+  try {
+    await api(`/api/v1/assets/${currentAsset.value.id}/repairs`, {
+      method: 'POST',
+      body: JSON.stringify({ ...repairForm, send_date: repairForm.send_date || null })
+    })
+    ElMessage.success('送修登记成功，资产状态已置为维修中')
+    showRepairDialog.value = false
+    await openAssetDetail(currentAsset.value)
+    fetchAssets()
+  } catch (err) {
+    ElMessage.error(err.message || '送修登记失败')
+  } finally {
+    repairSubmitting.value = false
+  }
+}
+
+function openReturnDialog(row) {
+  returnForm.repair_id = row.id
+  returnForm.return_date = ''
+  returnForm.result = ''
+  returnForm.cost = row.cost || 0
+  showReturnDialog.value = true
+}
+
+async function submitReturn() {
+  if (!currentAsset.value || !returnForm.repair_id) return
+  returnSubmitting.value = true
+  try {
+    await api(`/api/v1/assets/${currentAsset.value.id}/repairs/${returnForm.repair_id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        return_date: returnForm.return_date || null,
+        result: returnForm.result,
+        cost: returnForm.cost,
+        status: 'returned'
+      })
+    })
+    ElMessage.success('寄回登记成功，资产状态已恢复为使用中')
+    showReturnDialog.value = false
+    await openAssetDetail(currentAsset.value)
+    fetchAssets()
+  } catch (err) {
+    ElMessage.error(err.message || '寄回登记失败')
+  } finally {
+    returnSubmitting.value = false
   }
 }
 
@@ -514,7 +1058,6 @@ async function fetchAssets() {
   try {
     const params = new URLSearchParams()
     if (query.company_id) params.append('company_id', query.company_id)
-    if (query.u8_order_no) params.append('u8_order_no', query.u8_order_no)
     if (query.asset_tag) params.append('asset_tag', query.asset_tag)
     if (query.status) params.append('status', query.status)
     params.append('page', query.page)
@@ -532,7 +1075,6 @@ async function fetchAssets() {
 
 function resetQuery() {
   query.company_id = ''
-  query.u8_order_no = ''
   query.asset_tag = ''
   query.status = ''
   query.page = 1
@@ -545,15 +1087,33 @@ async function submitCreate() {
     if (!valid) return
     submitting.value = true
     try {
-      await api('/api/v1/assets', {
-        method: 'POST',
-        body: JSON.stringify(form),
-      })
-      ElMessage.success('固定资产档案登记成功！')
+      // date-picker 空值时是空字符串，后端 *time.Time 无法解析，统一置为 null
+      const categoryNames = { 1: '台式整机', 2: '笔记本电脑', 3: '显示器', 4: '外设及其他' }
+      const payload = {
+        ...form,
+        purchase_date: form.purchase_date || null,
+        category_name: categoryNames[form.category_id] || '',
+      }
+      if (editMode.value) {
+        await api(`/api/v1/assets/${form.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        })
+        ElMessage.success('台账保存成功！')
+        if (currentAsset.value && currentAsset.value.id === form.id) {
+          await openAssetDetail(currentAsset.value)
+        }
+      } else {
+        await api('/api/v1/assets', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+        ElMessage.success('固定资产档案登记成功！')
+      }
       showAddDialog.value = false
       fetchAssets()
     } catch (err) {
-      ElMessage.error(err.message || '登记失败')
+      ElMessage.error(err.message || '保存失败')
     } finally {
       submitting.value = false
     }
