@@ -94,7 +94,7 @@
               <el-tag type="success" size="small">
                 <el-icon><Monitor /></el-icon> {{ row.device.hostname }}
               </el-tag>
-              <div class="sub-text">IP: {{ row.device.ip_address || '172.20.36.7' }}</div>
+              <div class="sub-text">IP: {{ row.device.ip_address || '-' }}</div>
             </div>
             <span v-else class="empty-cell">未关联终端</span>
           </template>
@@ -361,11 +361,14 @@ async function openAssetDetail(row) {
   drawerVisible.value = true
   drawerLoading.value = true
   try {
-    // 优先读取绑定的真实 Agent 采集画像
-    const deviceId = row.device?.device_id || '895a66bc8bcaad56'
-    const res = await api(`/api/v1/devices/${deviceId}/history?limit=1`)
-    if (res.reports && res.reports.length > 0) {
-      deviceDetail.value = res.reports[0].payload
+    const deviceId = row.device?.device_id || ''
+    if (deviceId) {
+      const res = await api(`/api/v1/devices/${deviceId}/history?limit=1`)
+      if (res.reports && res.reports.length > 0) {
+        deviceDetail.value = res.reports[0].payload
+      }
+    } else {
+      deviceDetail.value = null
     }
   } catch (err) {
     console.error('failed to load device detail', err)

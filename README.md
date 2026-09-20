@@ -2,7 +2,7 @@
 
 > 自研跨平台终端自动化数据采集 Agent + 企业级 IT 资产全生命周期管理系统 (ITAM)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/tseng2/open-itam)](https://goreportcard.com/report/github.com/tseng2/open-itam)
 
 ## 📌 项目定位升级
@@ -25,4 +25,4 @@
 
 ## 📄 开源许可证
 
-本项目采用 [MIT 许可证](LICENSE) 开源。
+本项目采用 [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) 许可证开源。

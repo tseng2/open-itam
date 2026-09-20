@@ -262,19 +262,80 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 		userID = &user.ID
 	}
 
-	// 3. 自动同步或创建该终端对应的实物资产台账 (根据出厂SN或主机名关联)
+	// 3. 自动同步或创建该终端对应的实物资产台账
+	// 提取主物理网卡 IP 与 MAC
+	primaryIP := ""
+	primaryMAC := ""
+	for _, nic := range full.Hardware.NICs {
+		if primaryMAC == "" && nic.MAC != "" {
+			primaryMAC = nic.MAC
+		}
+		for _, ip := range nic.IPs {
+			cleanIP := strings.Split(ip, "/")[0]
+			if cleanIP != "" && cleanIP != "127.0.0.1" && !strings.HasPrefix(cleanIP, "169.254.") {
+				primaryIP = cleanIP
+				if nic.MAC != "" {
+					primaryMAC = nic.MAC
+				}
+				break
+			}
+		}
+		if primaryIP != "" {
+			break
+		}
+	}
+	if primaryIP == "" && len(full.Network.Interfaces) > 0 {
+		for _, iface := range full.Network.Interfaces {
+			for _, ip := range iface.IPs {
+				cleanIP := strings.Split(ip, "/")[0]
+				if cleanIP != "" && cleanIP != "127.0.0.1" && !strings.HasPrefix(cleanIP, "169.254.") {
+					primaryIP = cleanIP
+					if primaryMAC == "" {
+						primaryMAC = iface.MAC
+					}
+					break
+				}
+			}
+			if primaryIP != "" {
+				break
+			}
+		}
+	}
+
 	sn := strings.TrimSpace(full.Hardware.Serial)
 	if sn == "" || sn == "Default string" {
 		sn = strings.TrimSpace(full.Hardware.BIOSSerial)
 	}
-	if sn == "" {
+	if sn == "" || sn == "Default string" {
 		sn = deviceID
 	}
 
 	var asset model.Asset
-	err := store.DB.Where("serial_number = ? AND serial_number != '' AND serial_number != 'Default string'", sn).First(&asset).Error
-	if err != nil {
-		// 资产编码（固定资产编号）必须由人工录入或导入，Agent 自动上报仅生成临时待确认编码或预留为空
+	// 先检查当前设备是否已经绑定过实物资产
+	var existingDev model.Device
+	if err := store.DB.Where("device_id = ?", deviceID).First(&existingDev).Error; err == nil && existingDev.AssetID != nil && *existingDev.AssetID > 0 {
+		_ = store.DB.First(&asset, *existingDev.AssetID).Error
+	}
+
+	// 若未通过设备关联找到，则通过出厂硬件序列号查找已有资产
+	if asset.ID == 0 {
+		if sn != deviceID {
+			_ = store.DB.Where("serial_number = ? AND serial_number != '' AND serial_number != 'Default string'", sn).First(&asset).Error
+		}
+	}
+
+	if asset.ID == 0 {
+		// 生成规范临时资产编码，拼接指纹短码防止重名冲突
+		suffix := deviceID
+		if len(suffix) > 6 {
+			suffix = suffix[:6]
+		}
+		assetTag := "待编-" + full.Hostname
+		var conflict model.Asset
+		if err := store.DB.Where("asset_tag = ?", assetTag).First(&conflict).Error; err == nil {
+			assetTag = "待编-" + full.Hostname + "-" + suffix
+		}
+
 		brand := full.Hardware.Brand
 		if brand == "" {
 			brand = "OEM"
@@ -286,7 +347,7 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 		asset = model.Asset{
 			CompanyID:    company.ID,
 			CategoryID:   1, // 默认为电脑整机
-			AssetTag:     "待编-" + full.Hostname, // 明确标识为计算机名待人工赋予正式固定资产编号
+			AssetTag:     assetTag,
 			Status:       20, // 自动置为使用中
 			Brand:        brand,
 			ModelName:    modelName,
@@ -294,16 +355,16 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 			UserID:       userID,
 			Remark:       "计算机名称: " + full.Hostname + " (由 Agent 自动采集关联，待补充固定资产编码与U8单号)",
 		}
-		store.DB.Create(&asset)
-
-		event := model.AssetEvent{
-			AssetID:     asset.ID,
-			EventType:   "auto_discover",
-			Title:       "Agent 自动发现并关联固定资产",
-			Description: "终端设备 " + full.Hostname + " 自动上报入库",
-			OperatorID:  userID,
+		if err := store.DB.Create(&asset).Error; err == nil {
+			event := model.AssetEvent{
+				AssetID:     asset.ID,
+				EventType:   "auto_discover",
+				Title:       "Agent 自动发现并关联固定资产",
+				Description: "终端设备 " + full.Hostname + " 自动上报入库",
+				OperatorID:  userID,
+			}
+			store.DB.Create(&event)
 		}
-		store.DB.Create(&event)
 	} else {
 		// 已存在资产，更新当前使用人与状态
 		if userID != nil && (asset.UserID == nil || *asset.UserID != *userID) {
@@ -317,12 +378,19 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 	var dev model.Device
 	errDev := store.DB.Where("device_id = ?", deviceID).First(&dev).Error
 	now := time.Now()
+	var assetIDPtr *int64
+	if asset.ID > 0 {
+		assetIDPtr = &asset.ID
+	}
+
 	if errDev != nil {
 		dev = model.Device{
-			AssetID:       &asset.ID,
+			AssetID:       assetIDPtr,
 			DeviceID:      deviceID,
 			Hostname:      full.Hostname,
 			OSName:        full.OS.Name,
+			IPAddress:     primaryIP,
+			MacAddress:    primaryMAC,
 			CPUModel:      "",
 			AgentVersion:  "0.1.0",
 			LastSeenAt:    now,
@@ -333,9 +401,17 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 		dev.MemoryTotalGB = float64(full.Hardware.MemoryTotalMB) / 1024.0
 		store.DB.Create(&dev)
 	} else {
-		dev.AssetID = &asset.ID
+		if assetIDPtr != nil {
+			dev.AssetID = assetIDPtr
+		}
 		dev.Hostname = full.Hostname
 		dev.OSName = full.OS.Name
+		if primaryIP != "" {
+			dev.IPAddress = primaryIP
+		}
+		if primaryMAC != "" {
+			dev.MacAddress = primaryMAC
+		}
 		if len(full.Hardware.CPU) > 0 {
 			dev.CPUModel = full.Hardware.CPU[0].Model
 		}
