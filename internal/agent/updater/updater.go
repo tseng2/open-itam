@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"itagent/internal/agent/reporter"
 	"itagent/internal/shared/protocol"
@@ -35,12 +36,13 @@ func Apply(u *reporter.Uploader, info *protocol.UpdateInfo, installDir string) e
 		}
 	}
 
-	scriptPath := filepath.Join(updateDir, "apply_update.ps1")
-	if err := os.WriteFile(scriptPath, []byte(applyScript(installDir, newExe)), 0o644); err != nil {
-		return err
-	}
-	if err := spawnDetached(scriptPath); err != nil {
-		return fmt.Errorf("spawn updater: %w", err)
+	// 由新包自己完成替换：解释器在服务进程里常被终端安全软件拦截，
+	// 换成自研二进制做 SCM 停启 + 文件替换，整条链不依赖外部解释器
+	if err := spawnApply(newExe, installDir, os.Getpid()); err != nil {
+		// 服务进程无可见 stderr，把失败原因落到 update 目录供现场排查
+		_ = os.WriteFile(filepath.Join(updateDir, "update.log"),
+			[]byte(time.Now().UTC().Format(time.RFC3339)+" spawn failed: "+err.Error()+"\n"), 0o644)
+		return fmt.Errorf("spawn apply: %w", err)
 	}
 	log.Printf("updater spawned, agent exiting for update to v%s", info.Version)
 	return nil

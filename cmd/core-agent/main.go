@@ -20,11 +20,15 @@ import (
 	"itagent/internal/shared/protocol"
 )
 
-const agentVersion = "0.2.3"
+const agentVersion = "0.2.4"
 
 var (
 	cfgPathFlag = flag.String("config", "configs/agent.json", "path to agent config")
 	serviceFlag = flag.Bool("service", false, "run as windows service")
+	// 自应用入口：Agent 退出后由新包进程完成替换与拉起，不走解释器脚本
+	applyUpdateFlag = flag.Bool("apply-update", false, "apply the downloaded update package and restart the service")
+	applyParentPID  = flag.Int("apply-parent-pid", 0, "pid of the agent process being replaced")
+	applyInstallDir = flag.String("apply-install-dir", "", "agent install directory used by --apply-update")
 )
 
 // 防重复触发：一次进程生命周期内只执行一次自更新
@@ -32,10 +36,30 @@ var updateTriggered bool
 
 func main() {
 	flag.Parse()
+	if *applyUpdateFlag {
+		dir := *applyInstallDir
+		if dir == "" {
+			dir = updateExeInstallDir()
+		}
+		if err := updater.RunSelfApply(dir, *applyParentPID); err != nil {
+			log.Printf("apply update: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if tryRunAsService(*cfgPathFlag, *serviceFlag) {
 		return
 	}
 	runConsole(*cfgPathFlag)
+}
+
+// updateExeInstallDir 从更新包位置推导安装目录：data/update/x.exe → 上三级
+func updateExeInstallDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return filepath.Dir(filepath.Dir(filepath.Dir(exe)))
 }
 
 func runConsole(cfgPath string) {
