@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -197,5 +199,32 @@ func TestProbePrimaryRecovery(t *testing.T) {
 	}
 	if u.UsingBackup() {
 		t.Fatal("should switch back to primary")
+	}
+}
+
+func TestDownloadToSendsDeviceID(t *testing.T) {
+	var gotQuery atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/agent/update/download" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		gotQuery.Store(r.URL.Query().Get("device_id"))
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("payload-bytes"))
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "core-agent.new.exe")
+	u := NewUploader(srv.URL, "", "dev-7", "tok-7", nil)
+	if err := u.DownloadTo("/api/v1/agent/update/download", dest); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if q, _ := gotQuery.Load().(string); q != "dev-7" {
+		t.Fatalf("device_id query missing or wrong: %q", q)
+	}
+	content, err := os.ReadFile(dest)
+	if err != nil || string(content) != "payload-bytes" {
+		t.Fatalf("downloaded content wrong: %q err=%v", content, err)
 	}
 }

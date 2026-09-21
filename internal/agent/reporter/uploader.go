@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -136,7 +137,13 @@ func (u *Uploader) Register(installToken, hostname, osName, version string, bund
 func (u *Uploader) DownloadTo(path, destPath string) error {
 	var lastErr error
 	for _, base := range u.endpoints() {
-		req, err := http.NewRequest(http.MethodGet, base+path, nil)
+		full := base + path
+		if u.deviceID != "" {
+			// 服务端按 device_id+token 成对鉴权，缺 device_id 会 401，
+			// 导致自更新包下载永远失败（自更新链路断链根因）
+			full += "?device_id=" + url.QueryEscape(u.deviceID)
+		}
+		req, err := http.NewRequest(http.MethodGet, full, nil)
 		if err != nil {
 			lastErr = err
 			continue
