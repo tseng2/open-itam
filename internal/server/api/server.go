@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"itagent/internal/server/api/middleware"
 	"itagent/internal/server/model"
 	"itagent/internal/server/store"
+	"itagent/internal/shared/hwfilter"
 	"itagent/internal/shared/protocol"
 )
 
@@ -22,6 +25,9 @@ type Config struct {
 	AdminToken          string
 	DefaultHeartbeatSec int
 	DefaultFullSec      int
+	// Agent 安装包更新清单文件路径（JSON：version/file/sha256/notes），
+	// 为空时不下发更新
+	UpdateManifest string
 }
 
 type Handler struct {
@@ -35,6 +41,8 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.HandleFunc("POST /api/v1/register", h.handleRegister)
 	h.mux.HandleFunc("POST /api/v1/ingest", h.handleIngest)
 	h.mux.HandleFunc("GET /api/v1/agent/config", h.handleAgentConfig)
+	h.mux.HandleFunc("GET /api/v1/agent/update", h.handleAgentUpdate)
+	h.mux.HandleFunc("GET /api/v1/agent/update/download", h.handleAgentUpdateDownload)
 	h.mux.Handle("GET /api/v1/devices", h.admin(h.handleListDevices))
 	h.mux.Handle("GET /api/v1/devices/{id}", h.admin(h.handleGetDevice))
 	h.mux.Handle("GET /api/v1/devices/{id}/history", h.admin(h.handleDeviceHistory))
@@ -113,14 +121,91 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, protocol.RegisterResponse{Code: 403, Message: "invalid install_token"})
 		return
 	}
+
+	// 身份调和：新指纹携带特征包注册时，若与失联老终端高度重合，
+	// 要求 Agent 收养老指纹，保持资产绑定与历史数据连续
+	adoptID := ""
+	if _, err := h.store.GetDevice(r.Context(), req.DeviceID); errors.Is(err, store.ErrNotFound) {
+		adoptID = h.reconcileIdentity(req)
+	}
+	targetID := req.DeviceID
+	if adoptID != "" {
+		targetID = adoptID
+	}
+
 	token, err := h.store.RegisterDevice(r.Context(), store.Device{
-		DeviceID: req.DeviceID, Hostname: req.Hostname, OS: req.OS, AgentVersion: req.AgentVersion,
+		DeviceID: targetID, Hostname: req.Hostname, OS: req.OS, AgentVersion: req.AgentVersion,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, protocol.RegisterResponse{Code: 500, Message: "register failed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, protocol.RegisterResponse{Code: 0, Message: "ok", DeviceToken: token})
+	writeJSON(w, http.StatusOK, protocol.RegisterResponse{Code: 0, Message: "ok", DeviceToken: token, AdoptDeviceID: adoptID})
+}
+
+// reconcileIdentity 用身份特征包在终端画像表中寻找本机的既有记录。
+// 仅在指纹未见过时调用；命中即返回应收养的旧指纹，未命中返回空串
+func (h *Handler) reconcileIdentity(req protocol.RegisterRequest) string {
+	uuid := strings.ToUpper(strings.TrimSpace(req.BiosUUID))
+	hostname := strings.ToLower(strings.TrimSpace(req.Hostname))
+	boardSerial := strings.TrimSpace(req.BoardSerial)
+	reqMACs := map[string]bool{}
+	for _, m := range req.MACs {
+		reqMACs[strings.ToUpper(strings.TrimSpace(m))] = true
+	}
+	if uuid == "" && len(reqMACs) == 0 && boardSerial == "" {
+		return ""
+	}
+
+	var devices []model.Device
+	if err := store.DB.Find(&devices).Error; err != nil {
+		return ""
+	}
+	for _, d := range devices {
+		// 最强锚点：BIOS UUID 相同（同一台物理机基本不可能 UUID 相同）
+		if uuid != "" && !hwfilter.IsGarbageUUID(uuid) && strings.ToUpper(d.BIOSUUID) == uuid {
+			return d.DeviceID
+		}
+		// 次强：主机名相同 + MAC 有交集（特征包 MAC 集合，或老数据的主 MAC 列）
+		if hostname != "" && strings.ToLower(d.Hostname) == hostname {
+			var oldMACs []string
+			if json.Unmarshal([]byte(d.MACSet), &oldMACs) == nil {
+				for _, m := range oldMACs {
+					if reqMACs[m] {
+						return d.DeviceID
+					}
+				}
+			}
+			// 兼容老版本 Agent 的画像行：没有 mac_set，只有主网卡 MAC
+			if d.MacAddress != "" && reqMACs[strings.ToUpper(d.MacAddress)] {
+				return d.DeviceID
+			}
+			// 再次：主机名相同 + 主板序列号有效且一致
+			if boardSerial != "" && !hwfilter.IsGarbageSerial(boardSerial) && d.BoardSerial == boardSerial {
+				return d.DeviceID
+			}
+		}
+	}
+	return ""
+}
+
+// macSetJSON 把采集到的物理网卡 MAC 列表整理为排序去重后的 JSON 数组，
+// 作为身份特征包的一部分落库
+func macSetJSON(nics []protocol.NIC) string {
+	set := map[string]bool{}
+	for _, n := range nics {
+		m := strings.ToUpper(strings.TrimSpace(n.MAC))
+		if m != "" {
+			set[m] = true
+		}
+	}
+	macs := make([]string, 0, len(set))
+	for m := range set {
+		macs = append(macs, m)
+	}
+	sort.Strings(macs)
+	raw, _ := json.Marshal(macs)
+	return string(raw)
 }
 
 func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +248,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		ServerTime:       time.Now().UTC().Format(time.RFC3339),
 		NextHeartbeatSec: h.cfg.DefaultHeartbeatSec,
 		NextFullSec:      h.cfg.DefaultFullSec,
+		Update:           h.updateInfoFor(env.AgentVersion),
 	})
 }
 
@@ -399,23 +485,36 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 	}
 
 	if errDev != nil {
-		dev = model.Device{
-			AssetID:       assetIDPtr,
-			DeviceID:      deviceID,
-			Hostname:      full.Hostname,
-			OSName:        full.OS.Name,
-			IPAddress:     primaryIP,
-			PublicIP:      full.Network.PublicIP,
-			MacAddress:    primaryMAC,
-			CPUModel:      "",
-			AgentVersion:  "0.1.0",
-			LastSeenAt:    now,
+		// 资产可能已有 Excel 导入的占位终端行（ledger_*）或本机旧指纹的终端行：
+		// agent_devices.asset_id 有唯一索引，新建会冲突，必须原地升级为当前真实终端
+		var bound model.Device
+		if assetIDPtr != nil {
+			_ = store.DB.Where("asset_id = ?", *assetIDPtr).First(&bound).Error
 		}
+		if bound.ID > 0 {
+			dev = bound
+		} else {
+			dev = model.Device{AssetID: assetIDPtr}
+		}
+		dev.DeviceID = deviceID
+		dev.Hostname = full.Hostname
+		dev.OSName = full.OS.Name
+		dev.IPAddress = primaryIP
+		dev.PublicIP = full.Network.PublicIP
+		dev.MacAddress = primaryMAC
+		dev.BIOSUUID = strings.ToUpper(strings.TrimSpace(full.Hardware.UUID))
+		dev.BoardSerial = strings.TrimSpace(full.Hardware.BoardSerial)
+		dev.MACSet = macSetJSON(full.Hardware.NICs)
 		if len(full.Hardware.CPU) > 0 {
 			dev.CPUModel = full.Hardware.CPU[0].Model
 		}
 		dev.MemoryTotalGB = float64(full.Hardware.MemoryTotalMB) / 1024.0
-		store.DB.Create(&dev)
+		dev.LastSeenAt = now
+		if bound.ID > 0 {
+			store.DB.Save(&dev)
+		} else if err := store.DB.Create(&dev).Error; err != nil {
+			log.Printf("syncToAssetLedger: create device row failed for %s: %v", deviceID, err)
+		}
 	} else {
 		if assetIDPtr != nil {
 			dev.AssetID = assetIDPtr
@@ -431,6 +530,9 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 		if primaryMAC != "" {
 			dev.MacAddress = primaryMAC
 		}
+		dev.BIOSUUID = strings.ToUpper(strings.TrimSpace(full.Hardware.UUID))
+		dev.BoardSerial = strings.TrimSpace(full.Hardware.BoardSerial)
+		dev.MACSet = macSetJSON(full.Hardware.NICs)
 		if len(full.Hardware.CPU) > 0 {
 			dev.CPUModel = full.Hardware.CPU[0].Model
 		}
@@ -537,8 +639,16 @@ func applyAssetBookSpecs(asset *model.Asset, hw *protocol.Hardware, primaryMAC s
 		dirty = true
 	}
 	if asset.GPUName == "" && len(hw.GPUs) > 0 {
-		asset.GPUName = hw.GPUs[0].Model
-		dirty = true
+		// 跳过向日葵/ToDesk 等远控虚拟显卡，取第一块物理显卡（兼容未过滤的旧版 Agent）
+		for _, g := range hw.GPUs {
+			if !hwfilter.IsVirtualDisplay(g.Model) {
+				asset.GPUName = g.Model
+				break
+			}
+		}
+		if asset.GPUName != "" {
+			dirty = true
+		}
 	}
 	if asset.MACAddress == "" && primaryMAC != "" {
 		asset.MACAddress = primaryMAC

@@ -17,6 +17,10 @@ type Device struct {
 	CPUModel      string    `gorm:"type:varchar(128)" json:"cpu_model"`                     // CPU型号
 	MemoryTotalGB float64   `gorm:"type:decimal(8,2)" json:"memory_total_gb"`               // 内存容量(GB)
 	DiskTotalGB   float64   `gorm:"type:decimal(10,2)" json:"disk_total_gb"`                // 磁盘总容量(GB)
+	// 身份特征包：新指纹注册时与失联老终端做归属调和（重装系统丢配置的场景）
+	BIOSUUID      string    `gorm:"type:varchar(64);index" json:"bios_uuid"`                // BIOS/整机 UUID
+	BoardSerial   string    `gorm:"type:varchar(128)" json:"board_serial"`                  // 主板序列号
+	MACSet        string    `gorm:"type:text" json:"mac_set"`                               // 全部物理网卡 MAC（JSON 数组，已排序）
 	AgentVersion  string    `gorm:"type:varchar(32)" json:"agent_version"`                  // Agent采集端版本
 	LastSeenAt    time.Time `gorm:"index" json:"last_seen_at"`                              // 最近心跳时间
 }

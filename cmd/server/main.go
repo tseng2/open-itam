@@ -21,6 +21,8 @@ type serverConfig struct {
 	AdminToken          string `json:"admin_token"`
 	DefaultHeartbeatSec int    `json:"default_heartbeat_sec"`
 	DefaultFullSec      int    `json:"default_full_sec"`
+	// Agent 更新清单（version/file/sha256），默认 data/updates/manifest.json
+	UpdateManifest string `json:"update_manifest"`
 }
 
 func main() {
@@ -53,6 +55,9 @@ func main() {
 	if cfg.DefaultFullSec == 0 {
 		cfg.DefaultFullSec = 3600
 	}
+	if cfg.UpdateManifest == "" {
+		cfg.UpdateManifest = "data/updates/manifest.json"
+	}
 
 	if cfg.DBType == "sqlite" {
 		if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
@@ -72,6 +77,7 @@ func main() {
 		AdminToken:          cfg.AdminToken,
 		DefaultHeartbeatSec: cfg.DefaultHeartbeatSec,
 		DefaultFullSec:      cfg.DefaultFullSec,
+		UpdateManifest:      cfg.UpdateManifest,
 	})
 
 	root := ui.Wrap(h)
