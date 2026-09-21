@@ -90,6 +90,8 @@ type Hardware struct {
 	Model         string         `json:"model"`
 	Serial        string         `json:"serial"`
 	BIOSSerial    string         `json:"bios_serial"`
+	UUID          string         `json:"uuid"`        // Win32_ComputerSystemProduct.UUID，组装机身份主锚点
+	BoardSerial   string         `json:"board_serial"` // Win32_BaseBoard.SerialNumber
 	CPU           []CPU          `json:"cpu"`
 	MemoryTotalMB int64          `json:"memory_total_mb"`
 	MemoryModules []MemoryModule `json:"memory_modules"`
@@ -151,23 +153,38 @@ type Software struct {
 }
 
 type RegisterRequest struct {
-	DeviceID     string `json:"device_id"`
-	Hostname     string `json:"hostname"`
-	OS           string `json:"os"`
-	AgentVersion string `json:"agent_version"`
-	InstallToken string `json:"install_token"`
+	DeviceID     string   `json:"device_id"`
+	Hostname     string   `json:"hostname"`
+	OS           string   `json:"os"`
+	AgentVersion string   `json:"agent_version"`
+	InstallToken string   `json:"install_token"`
+	// 身份特征包：服务端用于新指纹与失联老终端的归属调和
+	BiosUUID    string   `json:"bios_uuid,omitempty"`
+	BoardSerial string   `json:"board_serial,omitempty"`
+	MACs        []string `json:"macs,omitempty"`
 }
 
 type RegisterResponse struct {
 	Code        int    `json:"code"`
 	Message     string `json:"message"`
 	DeviceToken string `json:"device_token,omitempty"`
+	// 非空表示服务端识别出本机是既有终端，要求 Agent 改用该旧指纹保持数据连续
+	AdoptDeviceID string `json:"adopt_device_id,omitempty"`
+}
+
+// UpdateInfo 服务端在 ingest 响应中下发的 Agent 更新指令
+type UpdateInfo struct {
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	Notes   string `json:"notes,omitempty"`
 }
 
 type IngestResponse struct {
-	Code             int    `json:"code"`
-	Message          string `json:"message"`
-	ServerTime       string `json:"server_time"`
-	NextHeartbeatSec int    `json:"next_heartbeat_sec"`
-	NextFullSec      int    `json:"next_full_sec"`
+	Code             int         `json:"code"`
+	Message          string      `json:"message"`
+	ServerTime       string      `json:"server_time"`
+	NextHeartbeatSec int         `json:"next_heartbeat_sec"`
+	NextFullSec      int         `json:"next_full_sec"`
+	Update           *UpdateInfo `json:"update,omitempty"`
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"itagent/internal/agent/identity"
 	"itagent/internal/shared/protocol"
 )
 
@@ -117,7 +118,7 @@ func TestRegisterFlow(t *testing.T) {
 	defer srv.Close()
 
 	u := NewUploader(srv.URL, "", "dev-9", "", nil)
-	token, err := u.Register("install-secret", "PC-9", "Windows 11", "0.1.0")
+	token, _, err := u.Register("install-secret", "PC-9", "Windows 11", "0.1.0", identity.Bundle{})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestRegisterAllEndpointsFail(t *testing.T) {
 	}))
 	defer bad.Close()
 	u := NewUploader(bad.URL, "http://127.0.0.1:1", "dev-9", "", nil)
-	if _, err := u.Register("x", "h", "os", "v"); err == nil {
+	if _, _, err := u.Register("x", "h", "os", "v", identity.Bundle{}); err == nil {
 		t.Fatal("expected error when all endpoints fail")
 	}
 	if u.Token() != "" {

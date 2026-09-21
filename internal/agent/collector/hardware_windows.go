@@ -3,6 +3,7 @@
 package collector
 
 import (
+	"itagent/internal/shared/hwfilter"
 	"itagent/internal/shared/protocol"
 )
 
@@ -41,6 +42,8 @@ $nics = @(Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapt
     model = $cs.Model
     serial = ('' + $csp.IdentifyingNumber).Trim()
     bios_serial = ('' + $bios.SerialNumber).Trim()
+    uuid = ('' + $csp.UUID).Trim()
+    board_serial = ('' + (Get-CimInstance Win32_BaseBoard).SerialNumber).Trim()
     cpu = $cpus
     memory_total_mb = [int64]($cs.TotalPhysicalMemory / 1MB)
     memory_modules = $mems
@@ -55,6 +58,14 @@ func collectHardwareWindows() (protocol.Hardware, error) {
 	if err := runPSJSON(hardwareScript, &hw); err != nil {
 		return protocol.Hardware{}, err
 	}
+	// 过滤远控/投屏软件的虚拟显示适配器，避免账面显卡被 Oray/ToDesk 占用
+	realGPUs := hw.GPUs[:0]
+	for _, g := range hw.GPUs {
+		if !hwfilter.IsVirtualDisplay(g.Model) {
+			realGPUs = append(realGPUs, g)
+		}
+	}
+	hw.GPUs = realGPUs
 	hw.SMART = collectSMART(hw.Disks)
 	return hw, nil
 }

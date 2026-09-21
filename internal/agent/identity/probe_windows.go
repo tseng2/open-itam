@@ -19,13 +19,30 @@ func probeBaseboardSerial() (string, error) {
 	return runPS(`(Get-CimInstance Win32_BaseBoard).SerialNumber`)
 }
 
-func probeFirstMAC() (string, error) {
-	return runPS(`(Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | Select-Object -First 1).MacAddress`)
+func probeBIOSUUID() (string, error) {
+	return runPS(`(Get-CimInstance Win32_ComputerSystemProduct).UUID`)
+}
+
+// 身份锚取全部物理网卡而非"第一张活动网卡"：网口切换、WiFi/有线互换、
+// 网卡 Up/Down 状态变化都不影响集合内容
+func probeAllMACs() ([]string, error) {
+	out, err := runPS(`(Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapter -and $_.MACAddress }).MacAddress`)
+	if err != nil {
+		return nil, err
+	}
+	var macs []string
+	for _, line := range strings.Split(out, "\n") {
+		if m := strings.TrimSpace(line); m != "" {
+			macs = append(macs, m)
+		}
+	}
+	return macs, nil
 }
 
 func PlatformProbe() ProbeFuncs {
 	return ProbeFuncs{
 		BaseboardSerial: probeBaseboardSerial,
-		FirstMAC:        probeFirstMAC,
+		BIOSUUID:        probeBIOSUUID,
+		AllMACs:         probeAllMACs,
 	}
 }

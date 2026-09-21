@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
+	"itagent/internal/agent/identity"
 	"itagent/internal/shared/protocol"
 )
 
@@ -96,14 +98,17 @@ func (u *Uploader) Upload(env protocol.Envelope) (*protocol.IngestResponse, erro
 	return nil, fmt.Errorf("ingest failed after %d attempts", failoverThreshold)
 }
 
-func (u *Uploader) Register(installToken, hostname, osName, version string) (string, error) {
+// Register 用安装令牌换取设备令牌。携带身份特征包，服务端若识别出本机是
+// 既有终端（重装系统后指纹重算的场景），会返回待收养的旧指纹
+func (u *Uploader) Register(installToken, hostname, osName, version string, bundle identity.Bundle) (token, adoptID string, err error) {
 	req := protocol.RegisterRequest{
 		DeviceID: u.deviceID, Hostname: hostname, OS: osName,
 		AgentVersion: version, InstallToken: installToken,
+		BiosUUID: bundle.BIOSUUID, BoardSerial: bundle.BoardSerial, MACs: bundle.MACs,
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, base := range u.endpoints() {
 		resp, err := u.post(base, "/api/v1/register", body)
@@ -121,10 +126,49 @@ func (u *Uploader) Register(installToken, hostname, osName, version string) (str
 		}
 		if out.DeviceToken != "" {
 			u.token = out.DeviceToken
-			return out.DeviceToken, nil
+			return out.DeviceToken, out.AdoptDeviceID, nil
 		}
 	}
-	return "", fmt.Errorf("register failed on all endpoints")
+	return "", "", fmt.Errorf("register failed on all endpoints")
+}
+
+// DownloadTo 下载服务端文件到本地路径（用于 Agent 自更新包），带设备令牌鉴权
+func (u *Uploader) DownloadTo(path, destPath string) error {
+	var lastErr error
+	for _, base := range u.endpoints() {
+		req, err := http.NewRequest(http.MethodGet, base+path, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+u.token)
+		resp, err := u.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("download %s: http %d", path, resp.StatusCode)
+			continue
+		}
+		f, err := os.Create(destPath)
+		if err != nil {
+			resp.Body.Close()
+			return err
+		}
+		_, copyErr := io.Copy(f, resp.Body)
+		resp.Body.Close()
+		f.Close()
+		if copyErr != nil {
+			os.Remove(destPath)
+			lastErr = copyErr
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func (u *Uploader) endpoints() []string {

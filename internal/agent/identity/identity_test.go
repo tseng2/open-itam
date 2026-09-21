@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"itagent/internal/shared/hwfilter"
 )
 
 var testProbe = ProbeFuncs{
@@ -79,11 +81,11 @@ func TestNormalizeMAC(t *testing.T) {
 
 func TestFilterGarbageSerial(t *testing.T) {
 	for _, bad := range []string{"Default string", "To be filled by O.E.M.", "System Serial Number", "None", "  "} {
-		if !isGarbageSerial(bad) {
+		if !hwfilter.IsGarbageSerial(bad) {
 			t.Fatalf("%q should be garbage", bad)
 		}
 	}
-	if isGarbageSerial("7XKQ1P3") {
+	if hwfilter.IsGarbageSerial("7XKQ1P3") {
 		t.Fatal("real serial wrongly filtered")
 	}
 }
