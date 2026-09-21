@@ -3,14 +3,22 @@
 package updater
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 
 	"golang.org/x/sys/windows"
 )
 
-// spawnDetached 以脱离父进程的方式启动替换脚本：Agent 进程退出后脚本仍继续运行
+// spawnDetached 以脱离父进程的方式启动替换脚本：Agent 进程退出后脚本仍继续运行。
+// 服务进程（LocalSystem）的 PATH 未必包含 powershell，优先按 SystemRoot 绝对路径解析，
+// 解析不到再回退 PATH 查找
 func spawnDetached(scriptPath string) error {
-	cmd := exec.Command("powershell",
+	ps := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	if _, err := os.Stat(ps); err != nil {
+		ps = "powershell"
+	}
+	cmd := exec.Command(ps,
 		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
 		"-WindowStyle", "Hidden", "-File", scriptPath)
 	cmd.SysProcAttr = &windows.SysProcAttr{
