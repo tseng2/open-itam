@@ -153,10 +153,12 @@
       destroy-on-close
     >
       <div v-if="currentAsset" v-loading="drawerLoading">
-        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px">
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px">
           <el-button type="primary" plain size="small" @click="openEditDialog">
             <el-icon><Edit /></el-icon> 编辑台账
           </el-button>
+          <el-button type="warning" plain size="small" @click="openMergeDialog">合并资产</el-button>
+          <el-button type="danger" plain size="small" @click="confirmDelete">删除</el-button>
         </div>
 
         <el-alert
@@ -656,6 +658,38 @@
       </template>
     </el-dialog>
 
+    <!-- 合并资产对话框 -->
+    <el-dialog v-model="showMergeDialog" title="合并重复资产" width="520px" destroy-on-close>
+      <el-alert type="warning" show-icon :closable="false" style="margin-bottom: 12px">
+        <template #title>
+          当前资产 <strong>{{ currentAsset?.asset_tag }}</strong> 的数据（终端绑定/履历/维修/基线）将并入目标资产，
+          当前记录随后被删除，操作不可撤销
+        </template>
+      </el-alert>
+      <el-select
+        v-model="mergeTargetId"
+        filterable
+        remote
+        :remote-method="searchMergeTargets"
+        :loading="mergeSearching"
+        placeholder="输入关键字搜索目标资产（编码/SN/主机名）"
+        style="width: 100%"
+      >
+        <el-option
+          v-for="item in mergeCandidates"
+          :key="item.id"
+          :label="`${item.asset_tag} ｜ ${item.brand || ''} ${item.model || ''} ｜ ${item.user?.real_name || '在库'}`"
+          :value="item.id"
+        />
+      </el-select>
+      <template #footer>
+        <el-button @click="showMergeDialog = false">取消</el-button>
+        <el-button type="warning" :disabled="!mergeTargetId" :loading="merging" @click="submitMerge">
+          确认合并
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 硬件变更审核对话框 -->
     <el-dialog v-model="showReviewDialog" title="硬件变更审核" width="500px" destroy-on-close>
       <el-form :model="reviewForm" label-width="100px">
@@ -682,7 +716,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { Monitor, Plus, Document, Money, Edit } from '@element-plus/icons-vue'
 import { api } from '../api'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -706,6 +740,11 @@ const showRepairDialog = ref(false)
 const repairSubmitting = ref(false)
 const showReturnDialog = ref(false)
 const returnSubmitting = ref(false)
+const showMergeDialog = ref(false)
+const merging = ref(false)
+const mergeSearching = ref(false)
+const mergeTargetId = ref(null)
+const mergeCandidates = ref([])
 
 const pendingReviewEvent = computed(() => {
   return assetEvents.value.find(e => e.review_status === 20 && e.event_type === 'hardware_change')
@@ -1071,6 +1110,69 @@ async function submitReview() {
     ElMessage.error(err.message || '审核失败')
   } finally {
     reviewSubmitting.value = false
+  }
+}
+
+function openMergeDialog() {
+  mergeTargetId.value = null
+  mergeCandidates.value = []
+  showMergeDialog.value = true
+  searchMergeTargets('')
+}
+
+// 合并目标候选搜索：排除当前资产自身
+async function searchMergeTargets(kw) {
+  if (!currentAsset.value) return
+  mergeSearching.value = true
+  try {
+    const params = new URLSearchParams({ page: 1, page_size: 20 })
+    if (kw) params.append('keyword', kw)
+    const res = await api(`/api/v1/assets?${params.toString()}`)
+    mergeCandidates.value = (res.data?.items || []).filter(a => a.id !== currentAsset.value.id)
+  } catch (err) {
+    console.error('search merge targets failed', err)
+  } finally {
+    mergeSearching.value = false
+  }
+}
+
+async function submitMerge() {
+  if (!currentAsset.value || !mergeTargetId.value) return
+  merging.value = true
+  try {
+    await api(`/api/v1/assets/${currentAsset.value.id}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({ target_id: mergeTargetId.value })
+    })
+    ElMessage.success('合并完成，源记录已删除')
+    showMergeDialog.value = false
+    drawerVisible.value = false
+    fetchAssets()
+  } catch (err) {
+    ElMessage.error(err.message || '合并失败')
+  } finally {
+    merging.value = false
+  }
+}
+
+async function confirmDelete() {
+  if (!currentAsset.value) return
+  try {
+    await ElMessageBox.confirm(
+      `删除后该资产从列表消失（软删除，履历数据保留）；其关联终端将解绑，下次上报会重新生成待编资产。确认删除 ${currentAsset.value.asset_tag} 吗？`,
+      '删除资产确认',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api(`/api/v1/assets/${currentAsset.value.id}`, { method: 'DELETE' })
+    ElMessage.success('资产已删除')
+    drawerVisible.value = false
+    fetchAssets()
+  } catch (err) {
+    ElMessage.error(err.message || '删除失败')
   }
 }
 

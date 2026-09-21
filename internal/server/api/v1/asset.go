@@ -9,6 +9,7 @@ import (
 	"itagent/internal/server/model"
 	"itagent/internal/server/store"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type AssetHandler struct{}
@@ -21,6 +22,8 @@ func RegisterAssetRoutes(r *gin.RouterGroup) {
 		assets.POST("", h.Create)
 		assets.GET("/:id", h.Get)
 		assets.PUT("/:id", h.Update)
+		assets.DELETE("/:id", h.Delete)
+		assets.POST("/:id/merge", h.Merge)
 		assets.GET("/:id/events", h.ListEvents)
 		assets.GET("/:id/versions", h.ListVersions)
 		assets.POST("/:id/events/:event_id/approve", h.ApproveEvent)
@@ -360,6 +363,177 @@ func (h *AssetHandler) Update(c *gin.Context) {
 		return
 	}
 	Success(c, asset)
+}
+
+// Delete 软删除资产：解绑关联终端（该终端下次上报会重新生成待编资产），
+// 履历/维修/基线版本记录保留，可通过合并或数据库追溯
+func (h *AssetHandler) Delete(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 40002, "invalid asset id")
+		return
+	}
+
+	var asset model.Asset
+	if err := store.DB.First(&asset, id).Error; err != nil {
+		Fail(c, http.StatusNotFound, 40401, "asset not found")
+		return
+	}
+
+	err = store.DB.Transaction(func(tx *gorm.DB) error {
+		// 终端解绑放在删除前：agent_devices.asset_id 有唯一索引，软删的资产不能继续占用
+		if err := tx.Model(&model.Device{}).Where("asset_id = ?", asset.ID).
+			Update("asset_id", nil).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&asset).Error; err != nil {
+			return err
+		}
+		event := model.AssetEvent{
+			AssetID:   asset.ID,
+			EventType: "delete",
+			Title:     "资产台账删除",
+			Description: "资产 " + asset.AssetTag + " 被删除（软删除，数据保留）",
+		}
+		return tx.Create(&event).Error
+	})
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 50004, "failed to delete asset: "+err.Error())
+		return
+	}
+	Success(c, gin.H{"message": "deleted"})
+}
+
+type MergeAssetRequest struct {
+	TargetID int64 `json:"target_id" binding:"required"` // 合并后保留的资产ID（源资产数据迁入后被软删除）
+}
+
+// Merge 把源资产（:id）并入目标资产（target_id）：终端绑定、履历、维修、基线版本全部迁移，
+// 目标资产的空账面字段用源资产补齐，源资产软删除
+func (h *AssetHandler) Merge(c *gin.Context) {
+	srcID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 40002, "invalid asset id")
+		return
+	}
+	var req MergeAssetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 40001, err.Error())
+		return
+	}
+	if req.TargetID == int64(srcID) {
+		Fail(c, http.StatusBadRequest, 40003, "cannot merge asset into itself")
+		return
+	}
+
+	var src, dst model.Asset
+	if err := store.DB.First(&src, srcID).Error; err != nil {
+		Fail(c, http.StatusNotFound, 40401, "source asset not found")
+		return
+	}
+	if err := store.DB.First(&dst, req.TargetID).Error; err != nil {
+		Fail(c, http.StatusNotFound, 40402, "target asset not found")
+		return
+	}
+
+	err = store.DB.Transaction(func(tx *gorm.DB) error {
+		// 终端迁移：一台资产只能绑一个终端（唯一索引）。两边都有终端时
+		// 保留"活的"（最近心跳新的），旧的解绑——重复登记常见于一旧一新两条待编
+		var srcDev, dstDev model.Device
+		srcHas := tx.Where("asset_id = ?", src.ID).First(&srcDev).Error == nil
+		dstHas := tx.Where("asset_id = ?", dst.ID).First(&dstDev).Error == nil
+		switch {
+		case srcHas && dstHas:
+			if srcDev.LastSeenAt.After(dstDev.LastSeenAt) {
+				if err := tx.Model(&model.Device{}).Where("id = ?", dstDev.ID).
+					Update("asset_id", nil).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&model.Device{}).Where("id = ?", srcDev.ID).
+					Update("asset_id", dst.ID).Error; err != nil {
+					return err
+				}
+			} else if err := tx.Model(&model.Device{}).Where("id = ?", srcDev.ID).
+				Update("asset_id", nil).Error; err != nil {
+				return err
+			}
+		case srcHas:
+			if err := tx.Model(&model.Device{}).Where("id = ?", srcDev.ID).
+				Update("asset_id", dst.ID).Error; err != nil {
+				return err
+			}
+		}
+
+		if err := tx.Model(&model.AssetEvent{}).Where("asset_id = ?", src.ID).
+			Update("asset_id", dst.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.AssetRepair{}).Where("asset_id = ?", src.ID).
+			Update("asset_id", dst.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.AssetVersion{}).Where("asset_id = ?", src.ID).
+			Update("asset_id", dst.ID).Error; err != nil {
+			return err
+		}
+
+		// 目标资产的空账面字段用源资产值补齐，已有人工维护值不覆盖
+		fill := map[string]interface{}{}
+		if dst.SerialNumber == "" {
+			fill["serial_number"] = src.SerialNumber
+		}
+		if dst.Brand == "" {
+			fill["brand"] = src.Brand
+		}
+		if dst.ModelName == "" {
+			fill["model_name"] = src.ModelName
+		}
+		if dst.CPUName == "" {
+			fill["cpu_name"] = src.CPUName
+		}
+		if dst.MemorySize == "" {
+			fill["memory_size"] = src.MemorySize
+		}
+		if dst.MainDisk == "" {
+			fill["main_disk"] = src.MainDisk
+		}
+		if dst.SecondaryDisk == "" {
+			fill["secondary_disk"] = src.SecondaryDisk
+		}
+		if dst.GPUName == "" {
+			fill["gpu_name"] = src.GPUName
+		}
+		if dst.MACAddress == "" {
+			fill["mac_address"] = src.MACAddress
+		}
+		if dst.PurchaseDate == nil {
+			fill["purchase_date"] = src.PurchaseDate
+		}
+		if dst.U8OrderNo == "" {
+			fill["u8_order_no"] = src.U8OrderNo
+		}
+		if len(fill) > 0 {
+			if err := tx.Model(&dst).Updates(fill).Error; err != nil {
+				return err
+			}
+		}
+
+		event := model.AssetEvent{
+			AssetID:   dst.ID,
+			EventType: "merge",
+			Title:     "合并重复资产台账",
+			Description: "将资产 " + src.AssetTag + " (ID:" + strconv.FormatInt(src.ID, 10) + ") 并入本记录，源记录已删除",
+		}
+		if err := tx.Create(&event).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&src).Error
+	})
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 50005, "failed to merge asset: "+err.Error())
+		return
+	}
+	Success(c, gin.H{"message": "merged", "target_id": dst.ID})
 }
 
 func (h *AssetHandler) ApproveEvent(c *gin.Context) {
