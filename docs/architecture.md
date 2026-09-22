@@ -317,18 +317,35 @@ flowchart TD
     N -- 是 --> P[切备用 NPM 公网]
 ```
 
-### 6.2 防卸载 / 退出密码
+### 6.2 防退出 / 防卸载密码模块化 + 随机验证码卸载
+
+密码归服务端 Web UI 集中管理（安装包不烧入任何密码），两个独立模块各带启用开关：
+
+- **模块配置**：`protection_modules` 表 `{module_key: quit|uninstall, enabled, password_hash}`（Argon2id，永不落明文）
+- **下发**：`GET /api/v1/agent/config` 响应携带 `quit_protection` / `uninstall_protection` 字段；Agent 经心跳（≤10 分钟）拉取后按注册表双写模式持久化（HKLM→HKCU 降级）
+- **门禁逻辑（QAX 同款）**：模块关闭 → 该操作免验证；开启 → 需密码（本地 hash 校验）；开启但未设密码 → fail-closed 拒绝操作；两模块都关闭 → 全部免验证
+- **随机验证码卸载（在线验证）**：防卸载开启时，卸载可输密码**或**在线验证码（二选一）。管理员在 Web UI 生成验证码（`POST /api/v1/protection/uninstall-code`）→ 存库绑定 device_id + 10 分钟过期 + 单次使用 → 转告终端用户；终端经 `POST /api/v1/agent/uninstall-code/verify`（device token）校验通过即标记已用
+- **卸载 Go 化**：`core-agent --uninstall`（替代 ps1 卸载脚本，绿盾环境不再被解释器拦截）：验证门禁 → 停看门狗 → 停删服务（SCM）→ 删 tray 计划任务 → 清注册表 → 自删安装目录，全过程写 `data/uninstall.log`
+- **离线终端**：防卸载开启时只能用本地密码（在线验证不可达，模型固有特性）
 
 ```mermaid
 flowchart TD
-    A[用户尝试退出 tray 或服务] --> B[弹出密码框]
-    B --> C[密码 Argon2id 校验]
+    A[用户尝试退出 tray] --> B{防退出模块开启?}
+    B -- 否 --> G[免验证直接退出]
+    B -- 是 --> B2{已设密码?}
+    B2 -- 否 --> E2[fail-closed 拒绝]
+    B2 -- 是 --> C[密码 Argon2id 校验]
     C --> D{匹配?}
     D -- 否 --> E[拒绝并记录]
-    D -- 是 --> F[服务端注销在线状态]
-    F --> G[退出]
-    H[强杀服务] --> I[watchdog 检测]
-    I --> J[3 秒内拉起 + 上报事件]
+    D -- 是 --> G
+    H[执行 core-agent --uninstall] --> I{防卸载模块开启?}
+    I -- 否 --> K[直接卸载]
+    I -- 是 --> I2{凭据: 密码/验证码?}
+    I2 -- 密码 --> C
+    I2 -- 验证码 --> J2[在线校验 单次/过期/设备绑定]
+    J2 -- 通过标记已用 --> K
+    J2 -- 拒绝 --> E
+    H --> L[停删服务 → 清注册表 → 自删安装目录]
 ```
 
 ### 6.3 数据流
@@ -383,7 +400,8 @@ sequenceDiagram
 |------|------|------|------|
 | POST | `/api/v1/register` | 设备注册 | install_token |
 | POST | `/api/v1/ingest` | 数据上报 | device_token |
-| GET | `/api/v1/agent/config` | Agent 拉配置 | device_token |
+| GET | `/api/v1/agent/config` | Agent 拉配置（含防护模块策略） | device_token |
+| POST | `/api/v1/agent/uninstall-code/verify` | 卸载验证码在线校验（单次/过期/设备绑定） | device_token |
 
 **管理 API（JWT，gin 引擎）：**
 
@@ -405,6 +423,9 @@ sequenceDiagram
 | GET | `/api/v1/devices/{id}/history` | 上报历史（同上） |
 | GET | `/api/v1/changes` | 变更事件列表（同上） |
 | POST | `/api/v1/changes/{id}/ack` | 标记已读（同上） |
+| GET | `/api/v1/protection/modules` | 防护模块状态（防退出/防卸载，JWT+RoleMiddleware） |
+| PUT | `/api/v1/protection/modules/{key}` | 更新模块开关与密码（Argon2id，仅 admin） |
+| POST | `/api/v1/protection/uninstall-code` | 生成随机卸载验证码（绑定设备+10 分钟过期+单次使用） |
 
 > Snipe-IT 同步接口已按 implementation_plan.md 的 Deprecations 作废移除。
 
@@ -494,7 +515,7 @@ sequenceDiagram
 
 1. 公网链路 TLS 1.2+，NPM 终止 TLS；内网可 HTTP
 2. device_token 走 Header，本地 v1.0 明文 0400 权限，v1.1 DPAPI/Keychain
-3. 退出/卸载密码仅存 Argon2id hash
+3. 退出/卸载密码仅存 Argon2id hash，且归服务端集中管理（安装包不烧入任何密码）
 4. NPM 只放通 `/api/v1/*`，管理 UI 仅内网/VPN
 5. 最小采集：不采密码、文件内容、键盘、屏幕、浏览记录
 
