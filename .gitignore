@@ -1,6 +1,7 @@
 data/
 temp/
 HANDOFF.md
+cmd/itagent-setup/assets/
 web/node_modules/
 internal/server/ui/dist/
 configs/agent.local.json
