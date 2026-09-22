@@ -27,6 +27,10 @@
           <el-descriptions-item label="最后在线">{{ timeAgo(device.last_seen_at) }}</el-descriptions-item>
           <el-descriptions-item label="Device ID">{{ device.device_id }}</el-descriptions-item>
         </el-descriptions>
+
+        <div class="overview-actions">
+          <el-button type="warning" @click="openUninstallCode">生成卸载验证码</el-button>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="硬件" name="hardware">
@@ -116,12 +120,30 @@
         </el-table>
       </el-tab-pane>
     </el-tabs>
+
+    <el-dialog v-model="codeVisible" title="卸载验证码" width="420px" destroy-on-close>
+      <template v-if="uninstallCode">
+        <el-alert
+          title="将验证码转告终端用户：10 分钟内有效、单次使用、仅限本设备；终端卸载时输入即可通过在线验证"
+          type="warning"
+          show-icon
+          :closable="false"
+        />
+        <div class="code-display">{{ uninstallCode.code }}</div>
+        <div class="code-expire">有效期至 {{ formatExpire(uninstallCode.expires_at) }}</div>
+      </template>
+      <template #footer>
+        <el-button @click="copyCode">复制验证码</el-button>
+        <el-button type="primary" @click="codeVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, inject } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { api, timeAgo } from '../api'
 
 const route = useRoute()
@@ -132,6 +154,8 @@ const tab = ref('overview')
 const softSearch = ref('')
 const hwGroups = ref(['cpu', 'mem', 'gpu', 'nic'])
 const pollChanges = inject('pollChanges', () => {})
+const codeVisible = ref(false)
+const uninstallCode = ref(null)
 
 const online = computed(() => {
   if (!device.value) return false
@@ -169,6 +193,34 @@ onMounted(async () => {
   if (full) fullPayload.value = full.payload
   pollChanges()
 })
+
+async function openUninstallCode() {
+  try {
+    const res = await api('/api/v1/protection/uninstall-code', {
+      method: 'POST',
+      body: JSON.stringify({ device_id: device.value.device_id }),
+    })
+    uninstallCode.value = res.data
+    codeVisible.value = true
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
+
+function formatExpire(iso) {
+  const d = new Date(iso)
+  const pad = n => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+async function copyCode() {
+  try {
+    await navigator.clipboard.writeText(uninstallCode.value.code)
+    ElMessage.success('验证码已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动记录')
+  }
+}
 </script>
 
 <style scoped>
@@ -176,4 +228,14 @@ onMounted(async () => {
 .title { font-size: 18px; font-weight: 600; }
 h4 { margin: 16px 0 8px; }
 pre { margin: 0; white-space: pre-wrap; font-family: inherit; }
+.overview-actions { margin-top: 16px; }
+.code-display {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 8px;
+  text-align: center;
+  padding: 16px 0;
+  font-family: 'Consolas', monospace;
+}
+.code-expire { font-size: 12px; color: #6b7280; text-align: center; }
 </style>
