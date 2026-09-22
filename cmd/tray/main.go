@@ -5,11 +5,8 @@ package main
 import (
 	_ "embed"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -17,7 +14,8 @@ import (
 	"github.com/getlantern/systray"
 
 	trayipc "itagent/internal/agent/ipc"
-	"itagent/internal/agent/password"
+	"itagent/internal/agent/protection"
+	"itagent/internal/shared/password"
 )
 
 const (
@@ -28,13 +26,7 @@ const (
 //go:embed icon.ico
 var iconData []byte
 
-var passwordHash atomic.Value
-
 func main() {
-	cfgPath := filepath.Join(filepath.Dir(os.Args[0]), "..", "configs", "agent.password")
-	if hash, err := os.ReadFile(cfgPath); err == nil {
-		passwordHash.Store(strings.TrimSpace(string(hash)))
-	}
 	systray.Run(onReady, onExit)
 }
 
@@ -141,25 +133,36 @@ func showMessage(title, text string) {
 		uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0)
 }
 
+// tryQuit 退出门禁（QAX 同款逻辑）：防退出模块关闭 → 免验证直接退出；
+// 开启 → 需本地密码验证（服务端下发的 Argon2id 哈希，注册表持久化）；
+// 开启但未设密码时无法通过验证（fail-closed），拒绝退出
 func tryQuit() bool {
-	hash := passwordHash.Load()
-	if hash == nil {
-		systray.SetTooltip("未设置退出密码，无法退出")
+	policy, hasPolicy := protection.Load()
+	if !hasPolicy || !policy.Quit.Enabled {
+		sendQuitIPC()
+		return true
+	}
+	if policy.Quit.PasswordHash == "" {
+		systray.SetTooltip("防护已启用但服务端未设置密码，无法退出")
 		return false
 	}
 	pwd, ok := promptPassword()
 	if !ok {
 		return false
 	}
-	if !password.Verify(pwd, hash.(string)) {
+	if !password.Verify(pwd, policy.Quit.PasswordHash) {
 		systray.SetTooltip("密码错误，拒绝退出")
 		return false
 	}
+	sendQuitIPC()
+	return true
+}
+
+func sendQuitIPC() {
 	conn, err := trayipc.Dial()
 	if err == nil {
 		_, _ = trayipc.Call(conn, trayipc.Request{Op: trayipc.OpQuit}, 2*time.Second)
 	}
-	return true
 }
 
 func onExit() {}

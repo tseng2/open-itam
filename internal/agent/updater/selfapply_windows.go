@@ -78,7 +78,7 @@ func RunSelfApply(installDir string, parentPID int) error {
 	}
 	defer s.Close()
 
-	logf("service stop requested, stopped=%v", stopService(s))
+	logf("service stop requested, stopped=%v", StopService(s))
 
 	if err := copyFile(target, backup); err != nil {
 		logf("backup old exe: %v", err)
@@ -104,7 +104,8 @@ func RunSelfApply(installDir string, parentPID int) error {
 	return nil
 }
 
-func stopService(s *mgr.Service) bool {
+// StopService 停止 SCM 服务：已停直接返回，否则发停止指令并轮询至 30 秒超时
+func StopService(s *mgr.Service) bool {
 	if st, err := s.Query(); err == nil && st.State == svc.Stopped {
 		return true
 	}

@@ -188,6 +188,47 @@ func (u *Uploader) endpoints() []string {
 	return []string{u.primary}
 }
 
+// FetchConfig 拉取服务端下发的 agent 配置（含防护模块策略），供调用方解析应用；
+// 走当前活跃端点，网络异常或非 200 返回错误
+func (u *Uploader) FetchConfig() ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, u.endpoints()[0]+"/api/v1/agent/config?device_id="+url.QueryEscape(u.deviceID), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build config request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+u.token)
+	resp, err := u.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch agent config: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read agent config: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch agent config: http %d", resp.StatusCode)
+	}
+	return body, nil
+}
+
+// PostJSON 以 JSON body POST 到当前活跃端点的指定路径，2xx 时返回响应体；
+// 供卸载验证码在线校验等带鉴权的调用方使用
+func (u *Uploader) PostJSON(path string, body []byte) ([]byte, error) {
+	resp, err := u.post(u.endpoints()[0], path, body)
+	if err != nil {
+		return nil, fmt.Errorf("post %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", path, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("post %s: http %d", path, resp.StatusCode)
+	}
+	return data, nil
+}
+
 func (u *Uploader) TryPrimary() bool {
 	if u.backup == "" {
 		return true

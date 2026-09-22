@@ -15,6 +15,7 @@ import (
 	"itagent/internal/agent/config"
 	"itagent/internal/agent/identity"
 	"itagent/internal/agent/ipc"
+	"itagent/internal/agent/protection"
 	"itagent/internal/agent/reporter"
 	"itagent/internal/agent/updater"
 	"itagent/internal/shared/protocol"
@@ -29,6 +30,9 @@ var (
 	applyUpdateFlag = flag.Bool("apply-update", false, "apply the downloaded update package and restart the service")
 	applyParentPID  = flag.Int("apply-parent-pid", 0, "pid of the agent process being replaced")
 	applyInstallDir = flag.String("apply-install-dir", "", "agent install directory used by --apply-update")
+	// Go 化卸载入口：验证门禁后停删服务并清理安装目录，密码/验证码交互输入
+	uninstallFlag     = flag.Bool("uninstall", false, "uninstall the agent with verification gate")
+	uninstallCodeFlag = flag.String("uninstall-code", "", "one-time online uninstall code issued by the server")
 )
 
 // 防重复触发：一次进程生命周期内只执行一次自更新
@@ -43,6 +47,13 @@ func main() {
 		}
 		if err := updater.RunSelfApply(dir, *applyParentPID); err != nil {
 			log.Printf("apply update: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *uninstallFlag {
+		if err := RunUninstall(*uninstallCodeFlag); err != nil {
+			log.Printf("uninstall: %v", err)
 			os.Exit(1)
 		}
 		return
@@ -140,12 +151,15 @@ func innerMain(cfgPath string, done <-chan struct{}) {
 					}
 					config.Save(cfgPath, cfg)
 					log.Printf("registered, device_token saved")
+					syncProtectionPolicy(cfgPath)
 					return
 				}
 				log.Printf("register failed, retry in 60s: %v", err)
 				time.Sleep(60 * time.Second)
 			}
 		}()
+	} else {
+		syncProtectionPolicy(cfgPath)
 	}
 
 	spool := reporter.NewSpool(cfg.SpoolDir)
@@ -164,9 +178,15 @@ func innerMain(cfgPath string, done <-chan struct{}) {
 		case <-done:
 			log.Printf("stopping")
 			return
+		case <-ipcSrv.QuitChan():
+			// 托盘密码退出请求（OpQuit）：退出后由 SCM 失败重启链自动拉起，
+			// 真正的卸载走 --uninstall（先删服务再清文件）
+			log.Printf("quit requested via ipc, stopping")
+			return
 		case now := <-tick.C:
 			if now.After(hb) {
 				enqueue(spool, cfg, col, "heartbeat")
+				syncProtectionPolicy(cfgPath)
 				hb = now.Add(10 * time.Minute)
 			}
 			if now.After(full) {
@@ -175,6 +195,32 @@ func innerMain(cfgPath string, done <-chan struct{}) {
 			}
 		}
 	}
+}
+
+// syncProtectionPolicy 拉取服务端下发的防护策略并持久化到注册表（HKLM→HKCU 降级）。
+// 每次从原子写的配置文件重读 token/deviceID 构造 Uploader，避免与注册 goroutine 的内存竞争；
+// 拉取或解析失败时保持本地既有策略（fail-closed），仅记录日志
+func syncProtectionPolicy(cfgPath string) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil || cfg.DeviceToken == "" {
+		return
+	}
+	u := reporter.NewUploader(cfg.ServerPrimary, cfg.ServerBackup, cfg.DeviceID, cfg.DeviceToken, nil)
+	body, err := u.FetchConfig()
+	if err != nil {
+		log.Printf("sync protection: %v", err)
+		return
+	}
+	p, err := protection.ParseServerConfig(body)
+	if err != nil {
+		log.Printf("sync protection: %v", err)
+		return
+	}
+	if err := protection.Persist(p); err != nil {
+		log.Printf("sync protection: %v", err)
+		return
+	}
+	log.Printf("protection policy synced: quit=%v uninstall=%v", p.Quit.Enabled, p.Uninstall.Enabled)
 }
 
 func enqueue(spool *reporter.Spool, cfg config.Config, col *collector.Collector, typ string) {

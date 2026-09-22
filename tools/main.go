@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"itagent/internal/agent/password"
+	"itagent/internal/shared/password"
 )
 
 func main() {

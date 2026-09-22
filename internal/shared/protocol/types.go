@@ -188,3 +188,9 @@ type IngestResponse struct {
 	NextFullSec      int         `json:"next_full_sec"`
 	Update           *UpdateInfo `json:"update,omitempty"`
 }
+
+// UninstallCodeVerifyRequest Agent 端在线校验卸载验证码的请求体：
+// 服务端按 device_token + device_id 绑定校验，通过即标记已用（单次有效）
+type UninstallCodeVerifyRequest struct {
+	Code string `json:"code"`
+}
