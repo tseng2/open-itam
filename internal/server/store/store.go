@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"itagent/internal/server/model"
 )
 
 var (
@@ -62,5 +64,10 @@ type Store interface {
 	SaveChangeEvent(ctx context.Context, e ChangeEvent) (int64, error)
 	ListChangeEvents(ctx context.Context, includeAcked bool, limit, offset int) ([]ChangeEvent, error)
 	AckChangeEvent(ctx context.Context, id int64) error
+	// 防护模块（防退出/防卸载）与卸载验证码：密码归服务端集中管理
+	GetProtectionModule(ctx context.Context, key string) (model.ProtectionModule, error)
+	PutProtectionModule(ctx context.Context, m model.ProtectionModule) error
+	CreateUninstallCode(ctx context.Context, deviceID string, ttl time.Duration) (model.UninstallCode, error)
+	VerifyUninstallCode(ctx context.Context, deviceID, code string) error
 	Close() error
 }

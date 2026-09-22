@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"time"
+
+	"itagent/internal/server/model"
 )
 
 const schema = `
@@ -54,6 +57,26 @@ CREATE TABLE IF NOT EXISTS change_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_change_events_open ON change_events(acked, id DESC);
+
+CREATE TABLE IF NOT EXISTS protection_modules (
+    module_key    TEXT PRIMARY KEY,
+    enabled       INTEGER NOT NULL DEFAULT 0,
+    password_hash TEXT NOT NULL DEFAULT '',
+    updated_at    DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS uninstall_codes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    code       TEXT NOT NULL UNIQUE,
+    device_id  TEXT NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at    DATETIME,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    deleted_at DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_uninstall_codes_device ON uninstall_codes(device_id, code);
 `
 
 type SQLiteStore struct {
@@ -281,4 +304,116 @@ func (s *SQLiteStore) ListReports(ctx context.Context, deviceID string, limit, o
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *SQLiteStore) GetProtectionModule(ctx context.Context, key string) (model.ProtectionModule, error) {
+	var m model.ProtectionModule
+	var enabled int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT enabled, password_hash, updated_at FROM protection_modules WHERE module_key = ?`, key).
+		Scan(&enabled, &m.PasswordHash, &m.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.ProtectionModule{ModuleKey: key}, nil
+	}
+	if err != nil {
+		return model.ProtectionModule{}, fmt.Errorf("get protection module %s: %w", key, err)
+	}
+	m.ModuleKey = key
+	m.Enabled = enabled == 1
+	return m, nil
+}
+
+func (s *SQLiteStore) PutProtectionModule(ctx context.Context, m model.ProtectionModule) error {
+	if m.ModuleKey != model.ProtectionModuleQuit && m.ModuleKey != model.ProtectionModuleUninstall {
+		return fmt.Errorf("unknown protection module: %s", m.ModuleKey)
+	}
+	existing, err := s.GetProtectionModule(ctx, m.ModuleKey)
+	if err != nil {
+		return err
+	}
+	if m.PasswordHash == "" {
+		m.PasswordHash = existing.PasswordHash
+	}
+	m.UpdatedAt = time.Now().UTC()
+	enabled := 0
+	if m.Enabled {
+		enabled = 1
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO protection_modules (module_key, enabled, password_hash, updated_at) VALUES (?,?,?,?)
+		 ON CONFLICT(module_key) DO UPDATE SET enabled=excluded.enabled, password_hash=excluded.password_hash, updated_at=excluded.updated_at`,
+		m.ModuleKey, enabled, m.PasswordHash, m.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("put protection module %s: %w", m.ModuleKey, err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) CreateUninstallCode(ctx context.Context, deviceID string, ttl time.Duration) (model.UninstallCode, error) {
+	if deviceID == "" {
+		return model.UninstallCode{}, fmt.Errorf("device_id required")
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(100000000))
+	if err != nil {
+		return model.UninstallCode{}, fmt.Errorf("generate uninstall code: %w", err)
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO uninstall_codes (code, device_id, expires_at, created_at, updated_at) VALUES (?,?,?,?,?)`,
+		fmt.Sprintf("%08d", n.Int64()), deviceID, now.Add(ttl), now, now)
+	if err != nil {
+		return model.UninstallCode{}, fmt.Errorf("create uninstall code: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.UninstallCode{}, fmt.Errorf("uninstall code id: %w", err)
+	}
+	return s.getUninstallCodeByID(ctx, id)
+}
+
+func (s *SQLiteStore) getUninstallCodeByID(ctx context.Context, id int64) (model.UninstallCode, error) {
+	var uc model.UninstallCode
+	var usedAt sql.NullTime
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, code, device_id, expires_at, used_at FROM uninstall_codes WHERE id = ?`, id).
+		Scan(&uc.ID, &uc.Code, &uc.DeviceID, &uc.ExpiresAt, &usedAt)
+	if err != nil {
+		return model.UninstallCode{}, fmt.Errorf("load uninstall code: %w", err)
+	}
+	if usedAt.Valid {
+		uc.UsedAt = &usedAt.Time
+	}
+	return uc, nil
+}
+
+func (s *SQLiteStore) VerifyUninstallCode(ctx context.Context, deviceID, code string) error {
+	if deviceID == "" || code == "" {
+		return ErrUnauthorized
+	}
+	var (
+		id       int64
+		expires  time.Time
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, expires_at FROM uninstall_codes
+		 WHERE device_id = ? AND code = ? AND used_at IS NULL ORDER BY id DESC`, deviceID, code).
+		Scan(&id, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnauthorized
+	}
+	if err != nil {
+		return fmt.Errorf("verify uninstall code: %w", err)
+	}
+	if time.Now().UTC().After(expires) {
+		return ErrUnauthorized
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE uninstall_codes SET used_at = ? WHERE id = ? AND used_at IS NULL`,
+		time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("mark uninstall code used: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrUnauthorized
+	}
+	return nil
 }
