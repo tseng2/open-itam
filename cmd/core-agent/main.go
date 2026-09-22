@@ -21,7 +21,7 @@ import (
 	"itagent/internal/shared/protocol"
 )
 
-const agentVersion = "0.2.4"
+const agentVersion = "0.2.5"
 
 var (
 	cfgPathFlag = flag.String("config", "configs/agent.json", "path to agent config")

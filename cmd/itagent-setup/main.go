@@ -39,7 +39,6 @@ var (
 func main() {
 	server := flag.String("server", defaultServer, "server base url (default baked at build time)")
 	token := flag.String("token", defaultToken, "install token (default baked at build time)")
-	password := flag.String("password", "Admin@12345", "agent quit/uninstall password")
 	installDir := flag.String("dir", `C:\ProgramData\ITAgent`, "install directory")
 	flag.Parse()
 
@@ -51,7 +50,7 @@ func main() {
 		flag.Usage()
 		fail("")
 	}
-	err := install(*server, *token, *password, *installDir)
+	err := install(*server, *token, *installDir)
 	if err != nil {
 		fail("install failed: " + err.Error())
 	}
@@ -78,19 +77,18 @@ func pauseIfInteractive() {
 	}
 }
 
-func install(server, token, password, dir string) error {
+func install(server, token, dir string) error {
 	fmt.Println("=== IT Agent Install ===")
 	killAgentProcesses()
 
-	for _, sub := range []string{"bin", "configs", "tools"} {
+	// 防退出/防卸载密码不再烧入安装包：归服务端 Web UI 集中配置，
+	// Agent 经 agent/config 下发后按注册表持久化
+	for _, sub := range []string{"bin", "configs"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			return err
 		}
 	}
 	if err := extractPayloads(dir); err != nil {
-		return err
-	}
-	if err := writeQuitPassword(dir, password); err != nil {
 		return err
 	}
 	if err := writeConfig(dir, server, token); err != nil {
@@ -132,17 +130,6 @@ func extractPayloads(dir string) error {
 		}
 		return os.WriteFile(filepath.Join(dir, sub, name), data, 0o755)
 	})
-}
-
-// writeQuitPassword 生成退出/卸载密码哈希（Argon2id，绝不存明文）；
-// 复用内嵌 verify 工具，保证与 Agent 校验格式完全一致
-func writeQuitPassword(dir, password string) error {
-	out, err := exec.Command(filepath.Join(dir, "tools", "verify.exe"), "hash", password).Output()
-	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
-	}
-	return os.WriteFile(filepath.Join(dir, "configs", "agent.password"),
-		bytes.TrimSpace(out), 0o644)
 }
 
 // writeConfig 生成 agent.json：新装/重装必须是无身份状态，device_id 由
