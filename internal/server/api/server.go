@@ -43,6 +43,7 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.HandleFunc("GET /api/v1/agent/config", h.handleAgentConfig)
 	h.mux.HandleFunc("GET /api/v1/agent/update", h.handleAgentUpdate)
 	h.mux.HandleFunc("GET /api/v1/agent/update/download", h.handleAgentUpdateDownload)
+	h.mux.HandleFunc("POST /api/v1/agent/uninstall-code/verify", h.handleUninstallCodeVerify)
 	h.mux.Handle("GET /api/v1/devices", h.admin(h.handleListDevices))
 	h.mux.Handle("GET /api/v1/devices/{id}", h.admin(h.handleGetDevice))
 	h.mux.Handle("GET /api/v1/devices/{id}/history", h.admin(h.handleDeviceHistory))
@@ -64,6 +65,9 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.Handle("/api/v1/part-records", ginEngine)
 	h.mux.Handle("/api/v1/part-records/", ginEngine)
 	h.mux.Handle("/api/v1/agent/heartbeat", ginEngine)
+	// 防护模块与卸载验证码管理（JWT + RoleMiddleware，高危安全面）
+	h.mux.Handle("/api/v1/protection", ginEngine)
+	h.mux.Handle("/api/v1/protection/", ginEngine)
 
 	return h
 }
@@ -258,11 +262,43 @@ func (h *Handler) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": 401, "message": "invalid device token"})
 		return
 	}
+	quit, err := h.store.GetProtectionModule(r.Context(), model.ProtectionModuleQuit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 500, "message": "query protection failed"})
+		return
+	}
+	uninstall, err := h.store.GetProtectionModule(r.Context(), model.ProtectionModuleUninstall)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 500, "message": "query protection failed"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code":                   0,
 		"heartbeat_interval_sec": h.cfg.DefaultHeartbeatSec,
 		"full_interval_sec":      h.cfg.DefaultFullSec,
+		"quit_protection":        map[string]any{"enabled": quit.Enabled, "password_hash": quit.PasswordHash},
+		"uninstall_protection":   map[string]any{"enabled": uninstall.Enabled, "password_hash": uninstall.PasswordHash},
 	})
+}
+
+// handleUninstallCodeVerify 卸载验证码在线校验（device token 鉴权，QAX 同款模型）：
+// 校验单次使用、10 分钟过期与设备绑定，通过即标记已用
+func (h *Handler) handleUninstallCodeVerify(w http.ResponseWriter, r *http.Request) {
+	var req protocol.UninstallCodeVerifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 400, "message": "invalid request"})
+		return
+	}
+	deviceID := r.URL.Query().Get("device_id")
+	if err := h.store.Authenticate(r.Context(), deviceID, bearerToken(r)); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": 401, "message": "invalid device token"})
+		return
+	}
+	if err := h.store.VerifyUninstallCode(r.Context(), deviceID, req.Code); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": 401, "message": "invalid or expired uninstall code"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "message": "verified"})
 }
 
 func (h *Handler) handleListDevices(w http.ResponseWriter, r *http.Request) {
