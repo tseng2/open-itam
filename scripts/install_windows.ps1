@@ -1,7 +1,6 @@
 param (
     [Parameter(Mandatory=$true)][string]$InstallToken,
     [string]$Server = "http://127.0.0.1:8443",
-    [string]$Password = "Admin@12345",
     [string]$InstallDir = "C:\ProgramData\ITAgent"
 )
 
@@ -19,7 +18,6 @@ Get-Process agent-watchdog -ErrorAction SilentlyContinue | Stop-Process -Force
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 New-Item -ItemType Directory -Force "$InstallDir\bin" | Out-Null
 New-Item -ItemType Directory -Force "$InstallDir\configs" | Out-Null
-New-Item -ItemType Directory -Force "$InstallDir\tools" | Out-Null
 
 $scriptDir = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path "$scriptDir\bin\core-agent.exe")) {
@@ -30,11 +28,9 @@ if (-not (Test-Path "$scriptDir\bin\core-agent.exe")) {
 Copy-Item "$scriptDir\bin\core-agent.exe" "$InstallDir\bin\core-agent.exe" -Force
 Copy-Item "$scriptDir\bin\tray.exe" "$InstallDir\bin\tray.exe" -Force
 Copy-Item "$scriptDir\bin\agent-watchdog.exe" "$InstallDir\bin\agent-watchdog.exe" -Force
-Copy-Item "$scriptDir\tools\verify.exe" "$InstallDir\tools\verify.exe" -Force
 
-# Argon2id hash for quit/uninstall password (never store plain text)
-$hash = & "$InstallDir\tools\verify.exe" hash $Password
-[IO.File]::WriteAllText("$InstallDir\configs\agent.password", ($hash | Out-String).Trim())
+# 防退出/防卸载密码不再烧入安装包：归服务端 Web UI 集中配置，
+# Agent 经 agent/config 下发后按注册表持久化
 
 $agentCfg = Get-Content "$scriptDir\configs\agent.json" | ConvertFrom-Json
 $agentCfg.install_token = $InstallToken

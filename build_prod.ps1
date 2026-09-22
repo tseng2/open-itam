@@ -32,13 +32,9 @@ if ($LASTEXITCODE -ne 0) { throw "构建失败" }
 Write-Host "编译 watchdog..."
 go build -o "$OutBinDir\agent-watchdog.exe" .\cmd\agent-watchdog
 
-Write-Host "构建密码生成器"
-go build -o "$OutBinDir\verify.exe" .\tools
-
 # 拷贝 config、scripts
 Copy-Item "configs\agent.json" "$OutBinDir\configs\agent.json" -Force
 Copy-Item "scripts\install_windows.ps1" "$OutputDir\install_windows.ps1" -Force
-Copy-Item "scripts\uninstall_windows.ps1" "$OutputDir\uninstall_windows.ps1" -Force
 # 打包即可，无 zip，交付给 IT 伙伴后再压缩
 $ArchivePath = "$PSScriptRoot\itagent-deploy.ps1"
 Remove-Item $ArchivePath -ErrorAction SilentlyContinue; Rename-Item -Path $OutputDir -MemberName $ArchivePath

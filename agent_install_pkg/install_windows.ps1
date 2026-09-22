@@ -1,7 +1,6 @@
 param (
     [Parameter(Mandatory=$true)][string]$InstallToken,
     [string]$Server = "http://127.0.0.1:8443",
-    [string]$Password = "Admin@12345",
     [string]$InstallDir = "C:\ProgramData\ITAgent"
 )
 
@@ -19,9 +18,8 @@ Get-Process agent-watchdog -ErrorAction SilentlyContinue | Stop-Process -Force
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 New-Item -ItemType Directory -Force "$InstallDir\bin" | Out-Null
 New-Item -ItemType Directory -Force "$InstallDir\configs" | Out-Null
-New-Item -ItemType Directory -Force "$InstallDir\tools" | Out-Null
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$scriptDir = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path "$scriptDir\bin\core-agent.exe")) {
     Write-Host "ERROR: bin\core-agent.exe not found" -ForegroundColor Red
     exit 1
@@ -30,20 +28,26 @@ if (-not (Test-Path "$scriptDir\bin\core-agent.exe")) {
 Copy-Item "$scriptDir\bin\core-agent.exe" "$InstallDir\bin\core-agent.exe" -Force
 Copy-Item "$scriptDir\bin\tray.exe" "$InstallDir\bin\tray.exe" -Force
 Copy-Item "$scriptDir\bin\agent-watchdog.exe" "$InstallDir\bin\agent-watchdog.exe" -Force
-Copy-Item "$scriptDir\tools\verify.exe" "$InstallDir\tools\verify.exe" -Force
 
-# Password hash (plain for now, tools generates)
-Set-Content -Path "$InstallDir\configs\agent.password" -Value $Password -Encoding UTF8
+# 防退出/防卸载密码不再烧入安装包：归服务端 Web UI 集中配置，
+# Agent 经 agent/config 下发后按注册表持久化
 
 $agentCfg = Get-Content "$scriptDir\configs\agent.json" | ConvertFrom-Json
 $agentCfg.install_token = $InstallToken
 $agentCfg.server_primary = $Server
 $agentCfg.spool_dir = "$InstallDir\data\spool"
+# 新装/重装必须是无身份状态：device_id 由 agent 按本机硬件生成，绝不能从模板继承，
+# 否则两台机器会共用同一个 device_id（此坑真实发生过）
+$agentCfg.device_id = ""
+$agentCfg.device_token = ""
 $agentCfg | ConvertTo-Json -Depth 10 | Set-Content "$InstallDir\configs\agent.json"
 
+sc.exe stop ITAgentService 2>$null | Out-Null
+Start-Sleep -Seconds 2
 sc.exe delete ITAgentService 2>$null | Out-Null
-sc.exe create ITAgentService binPath= "`"$InstallDir\bin\core-agent.exe`"" start= auto | Out-Null
-	sc.exe config ITAgentService obj= "NT AUTHORITY\System" 2>$null | Out-Null
+Start-Sleep -Seconds 2
+sc.exe create ITAgentService binPath= "`"$InstallDir\bin\core-agent.exe`" -config `"$InstallDir\configs\agent.json`"" start= auto | Out-Null
+sc.exe failure ITAgentService reset= 60 actions= restart/5000/restart/10000/restart/30000 | Out-Null
 
 $action = New-ScheduledTaskAction -Execute "$InstallDir\bin\tray.exe"
 $trigger = New-ScheduledTaskTrigger -AtLogOn
