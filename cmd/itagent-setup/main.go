@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"embed"
 	"encoding/json"
@@ -27,26 +28,54 @@ var assets embed.FS
 
 const serviceName = "ITAgentService"
 
+// defaultServer/defaultToken 构建时经 -ldflags "-X main.defaultServer=... -X
+// main.defaultToken=..." 烧入本环境默认值：双击即可安装、批量推送无需传参，
+// flags 仍可覆盖以适配其他环境
+var (
+	defaultServer = ""
+	defaultToken  = ""
+)
+
 func main() {
-	server := flag.String("server", "", "server base url, e.g. http://10.1.1.96:8443")
-	token := flag.String("token", "", "install token issued by server")
+	server := flag.String("server", defaultServer, "server base url (default baked at build time)")
+	token := flag.String("token", defaultToken, "install token (default baked at build time)")
 	password := flag.String("password", "Admin@12345", "agent quit/uninstall password")
 	installDir := flag.String("dir", `C:\ProgramData\ITAgent`, "install directory")
 	flag.Parse()
 
 	if !windows.GetCurrentProcessToken().IsElevated() {
-		fmt.Println("ERROR: run as Administrator")
-		os.Exit(1)
+		fail("ERROR: run as Administrator")
 	}
 	if *server == "" || *token == "" {
+		fmt.Println("ERROR: -server and -token are required (or bake defaults at build time)")
 		flag.Usage()
-		os.Exit(1)
+		fail("")
 	}
-	if err := install(*server, *token, *password, *installDir); err != nil {
-		fmt.Printf("install failed: %v\n", err)
-		os.Exit(1)
+	err := install(*server, *token, *password, *installDir)
+	if err != nil {
+		fail("install failed: " + err.Error())
 	}
 	fmt.Println("Install OK, service started")
+	pauseIfInteractive()
+}
+
+// fail 打印错误后按需暂停退出：双击场景控制台会立即关闭，错误来不及看
+func fail(msg string) {
+	if msg != "" {
+		fmt.Println(msg)
+	}
+	pauseIfInteractive()
+	os.Exit(1)
+}
+
+// pauseIfInteractive 仅在有真实控制台时暂停：GPO/绿盾批量推送无控制台
+// 输入立即退出，双击安装能看到结果
+func pauseIfInteractive() {
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		fmt.Println()
+		fmt.Println("按回车键退出...")
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+	}
 }
 
 func install(server, token, password, dir string) error {
