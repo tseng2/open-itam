@@ -82,8 +82,9 @@ func install(server, token, dir string) error {
 	killAgentProcesses()
 
 	// 防退出/防卸载密码不再烧入安装包：归服务端 Web UI 集中配置，
-	// Agent 经 agent/config 下发后按注册表持久化
-	for _, sub := range []string{"bin", "configs"} {
+	// Agent 经 agent/config 下发后按注册表持久化。
+	// tools 目录仍需创建：smartctl.exe 解包于此，是 SMART 采集的主要来源
+	for _, sub := range []string{"bin", "configs", "tools"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			return err
 		}
