@@ -9,6 +9,12 @@
         <el-button type="primary" @click="openCreateDialog">
           <el-icon><Plus /></el-icon> 资产登记
         </el-button>
+        <el-button v-if="isAdmin" @click="openImportDialog">
+          <el-icon><Upload /></el-icon> Excel 导入
+        </el-button>
+        <el-button v-if="isAdmin" @click="exportAssets">
+          <el-icon><Download /></el-icon> 导出台账
+        </el-button>
       </div>
     </div>
 
@@ -182,13 +188,13 @@
           <el-button type="warning" plain size="small" @click="openMergeDialog">合并资产</el-button>
           <el-button type="danger" plain size="small" @click="confirmDelete">删除</el-button>
           <el-button
-            v-if="isDrawerAdmin && !currentAsset.off_book && currentAsset.status !== 40"
+            v-if="isAdmin && !currentAsset.off_book && currentAsset.status !== 40"
             type="warning"
             size="small"
             @click="confirmOffBook"
           >销账转列管</el-button>
           <el-button
-            v-if="isDrawerAdmin && currentAsset.off_book"
+            v-if="isAdmin && currentAsset.off_book"
             type="success"
             plain
             size="small"
@@ -260,7 +266,7 @@
               {{ req.is_long_term ? '长期领用' : '短期借用' }}
             </el-tag>
             <span class="req-reason">{{ req.reason }}</span>
-            <template v-if="isDrawerAdmin">
+            <template v-if="isAdmin">
               <el-button size="small" type="success" @click="approveAssetRequestFromDrawer(req)">通过</el-button>
               <el-button size="small" type="danger" plain @click="rejectAssetRequestFromDrawer(req)">驳回</el-button>
             </template>
@@ -690,6 +696,59 @@
       </template>
     </el-dialog>
 
+    <!-- 台账 Excel 批量导入对话框（P1）：模板下载/挂折旧规则/行级错误明细 -->
+    <el-dialog v-model="showImportDialog" title="台账 Excel 批量导入" width="680px" :close-on-click-modal="false">
+      <el-form label-width="100px">
+        <el-form-item label="所属公司" required>
+          <el-select v-model="importForm.company_id" placeholder="选择资产归属公司" style="width: 100%">
+            <el-option v-for="item in companies" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="折旧规则">
+          <el-select
+            v-model="importForm.depreciation_id"
+            placeholder="可选：导入资产统一挂接，自动算净值"
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="r in importRules"
+              :key="r.id"
+              :label="`${r.name}（共${r.months}个月）`"
+              :value="r.id"
+            />
+          </el-select>
+          <div class="import-tip">净值优先级：Excel 账面净值 > 折旧规则计算；挂接后折旧引擎每小时兜底重刷</div>
+        </el-form-item>
+        <el-form-item label="Excel 文件" required>
+          <input class="import-file" type="file" accept=".xlsx" @change="onImportFileChange" />
+          <div class="import-tip">
+            单次最多 2000 行、5MB；支持按表头名识别（列序无关），已存在编码整批拒收。
+            首次使用请先
+            <el-link type="primary" :underline="false" @click="downloadImportTemplate">下载导入模板</el-link>
+          </div>
+        </el-form-item>
+      </el-form>
+      <el-alert
+        v-if="importErrors.length"
+        type="error"
+        :closable="false"
+        :title="`共 ${importErrors.length} 行未通过校验，未导入任何资产，请修正后重新上传`"
+      />
+      <el-table v-if="importErrors.length" :data="importErrors" size="small" max-height="240" style="margin-top: 8px">
+        <el-table-column label="位置" width="100">
+          <template #default="{ row }">{{ row.row ? `第 ${row.row} 行` : '系统查重' }}</template>
+        </el-table-column>
+        <el-table-column prop="reason" label="原因" />
+      </el-table>
+      <template #footer>
+        <el-button @click="showImportDialog = false">关闭</el-button>
+        <el-button type="primary" :loading="importSubmitting" :disabled="!importReady" @click="submitImport">
+          开始导入
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 外寄维修送修登记对话框 -->
     <el-dialog v-model="showRepairDialog" title="外寄维修送修登记" width="620px" destroy-on-close>
       <el-form :model="repairForm" label-width="110px">
@@ -837,8 +896,8 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
-import { Monitor, Plus, Document, Money, Edit } from '@element-plus/icons-vue'
-import { api } from '../api'
+import { Monitor, Plus, Document, Money, Edit, Upload, Download } from '@element-plus/icons-vue'
+import { api, apiBlob, apiUpload } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const loading = ref(false)
@@ -881,8 +940,9 @@ const dispatchOverdue = computed(() => {
   return !!d && d.status === 10 && new Date(d.expected_return_at).getTime() < Date.now()
 })
 
-// 抽屉内审批按钮只对 admin/super_admin 展示（后端另有 RoleMiddleware 兜底）
-const isDrawerAdmin = computed(() => {
+// 当前登录用户是否 admin/super_admin：抽屉内审批与批量导入导出共用
+//（后端另有 RoleMiddleware 兜底，前端只控制展示）
+const isAdmin = computed(() => {
   try {
     const raw = localStorage.getItem('itagent_user')
     const role = raw ? JSON.parse(raw).role : ''
@@ -1589,6 +1649,107 @@ function resetQuery() {
   fetchAssets()
 }
 
+// ============ 台账 Excel 批量导入导出（阶段五 P1，仅 admin） ============
+
+const showImportDialog = ref(false)
+const importSubmitting = ref(false)
+const importErrors = ref([])
+const importFile = ref(null)
+const importForm = reactive({ company_id: '', depreciation_id: '' })
+// 导入对话框的规则下拉独立于资产表单缓存：互不干扰各自的公司切换
+const importRules = ref([])
+
+const importReady = computed(() => !!importForm.company_id && !!importFile.value)
+
+function openImportDialog() {
+  importErrors.value = []
+  importFile.value = null
+  importForm.company_id = query.company_id || ''
+  importForm.depreciation_id = ''
+  showImportDialog.value = true
+}
+
+watch(() => importForm.company_id, async (id) => {
+  importForm.depreciation_id = ''
+  importRules.value = []
+  if (!id) return
+  try {
+    const res = await api(`/api/v1/depreciations?company_id=${id}&page_size=100`)
+    importRules.value = res.data?.items || []
+  } catch (err) {
+    console.error('failed to fetch depreciation rules for import', err)
+  }
+})
+
+function onImportFileChange(e) {
+  importFile.value = e.target.files?.[0] || null
+  importErrors.value = []
+}
+
+// blob 落盘（导入模板/台账导出共用）
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function downloadImportTemplate() {
+  try {
+    const blob = await apiBlob('/api/v1/assets/import-template')
+    saveBlob(blob, '资产导入模板.xlsx')
+  } catch (err) {
+    ElMessage.error(err.message || '下载模板失败')
+  }
+}
+
+// 导出与列表页共用当前筛选条件，所见即所得
+async function exportAssets() {
+  const params = new URLSearchParams()
+  if (query.company_id) params.append('company_id', query.company_id)
+  if (query.asset_tag) params.append('asset_tag', query.asset_tag)
+  if (query.keyword) params.append('keyword', query.keyword)
+  if (query.status) params.append('status', query.status)
+  if (query.off_book !== '' && query.off_book !== null) params.append('off_book', query.off_book)
+  try {
+    const blob = await apiBlob(`/api/v1/assets/export?${params.toString()}`)
+    saveBlob(blob, `资产台账-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    ElMessage.success('导出成功')
+  } catch (err) {
+    ElMessage.error(err.message || '导出失败')
+  }
+}
+
+async function submitImport() {
+  if (!importReady.value) return
+  importSubmitting.value = true
+  importErrors.value = []
+  try {
+    const fd = new FormData()
+    fd.append('file', importFile.value)
+    fd.append('company_id', importForm.company_id)
+    if (importForm.depreciation_id) fd.append('depreciation_id', importForm.depreciation_id)
+    const res = await apiUpload('/api/v1/assets/import', fd)
+    if (res.code === 0) {
+      ElMessage.success(`导入成功：新建 ${res.data?.created ?? 0} 条资产`)
+      showImportDialog.value = false
+      fetchAssets()
+    } else if (res.code === 40006) {
+      // 行级校验整批拒收：错误明细按行展示在对话框内
+      importErrors.value = res.data?.errors || []
+      ElMessage.warning(res.message)
+    } else {
+      ElMessage.error(res.message || '导入失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.message || '导入失败')
+  } finally {
+    importSubmitting.value = false
+  }
+}
+
 async function submitCreate() {
   if (!formRef.value) return
   await formRef.value.validate(async (valid) => {
@@ -1728,5 +1889,14 @@ h4 {
   margin: 18px 0 10px 0;
   color: #1f2937;
   font-size: 15px;
+}
+.import-tip {
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.6;
+  margin-top: 4px;
+}
+.import-file {
+  margin-bottom: 2px;
 }
 </style>
