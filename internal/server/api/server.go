@@ -614,31 +614,16 @@ func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) 
 				store.DB.Save(&asset)
 			}
 		} else {
-			// 对比基线
+			// 对比基线（A3：比对逻辑提炼为 compareHardware 纯函数，
+			// 覆盖内存/内置磁盘数量/磁盘序列号/CPU 数量与型号）
 			var baseHw protocol.Hardware
 			if json.Unmarshal([]byte(currentVersion.HardwareSnapshot), &baseHw) == nil {
-				// 简易比对：内存和磁盘数量
-				changed := false
-				var diff []string
-				
-				baseMem := baseHw.MemoryTotalMB / 1024
-				newMem := full.Hardware.MemoryTotalMB / 1024
-				if baseMem != newMem {
-					changed = true
-					diff = append(diff, fmt.Sprintf("内存: %dGB -> %dGB", baseMem, newMem))
-				}
-				
-				if len(baseHw.Disks) != len(full.Hardware.Disks) {
-					changed = true
-					diff = append(diff, fmt.Sprintf("磁盘数量: %d -> %d", len(baseHw.Disks), len(full.Hardware.Disks)))
-				}
-				
-				if changed {
-					// 检查是否已有待审核的事件（避免重复提交待审）
+				if diff := compareHardware(baseHw, full.Hardware); len(diff) > 0 {
+					// 检查是否已有待审核的事件（避免重复提交待审）：
+					// 管理员驳回或审核通过前，同一资产的硬件变更事件保持单条
 					var pending model.AssetEvent
 					errPending := store.DB.Where("asset_id = ? AND event_type = 'hardware_change' AND review_status = 20", asset.ID).First(&pending).Error
 					if errPending != nil {
-						// 创建待审核事件
 						event := model.AssetEvent{
 							AssetID:      asset.ID,
 							EventType:    "hardware_change",
