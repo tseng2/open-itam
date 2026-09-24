@@ -19,6 +19,12 @@ itagent-deploy
 itagent-pkg
 agent_install_pkg
 
+# 运行时数据与真实配置绝不能进构建上下文（DB 快照 176M+ 会拖慢构建；
+# configs/server.json 含真实 install_token/admin_token，镜像内已有模板、运行时由 compose 挂载覆盖）
+deploy/server/mysql-data
+deploy/server/data
+deploy/server/configs
+
 # 打包产物与本机工具
 *.zip
 *.tar.gz
