@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"itagent/internal/server/model"
@@ -201,6 +202,65 @@ CREATE TABLE IF NOT EXISTS depreciations (
 
 CREATE INDEX IF NOT EXISTS idx_depreciations_company ON depreciations(company_id);
 CREATE INDEX IF NOT EXISTS idx_depreciations_enabled ON depreciations(enabled);
+
+CREATE TABLE IF NOT EXISTS manufacturers (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    name       TEXT NOT NULL,
+    remark     TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    deleted_at DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_manufacturers_company ON manufacturers(company_id);
+
+CREATE TABLE IF NOT EXISTS suppliers (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id   INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    contact_name TEXT NOT NULL DEFAULT '',
+    phone        TEXT NOT NULL DEFAULT '',
+    remark       TEXT NOT NULL DEFAULT '',
+    created_at   DATETIME NOT NULL,
+    updated_at   DATETIME NOT NULL,
+    deleted_at   DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_suppliers_company ON suppliers(company_id);
+
+CREATE TABLE IF NOT EXISTS locations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    name       TEXT NOT NULL,
+    parent_id  INTEGER,
+    remark     TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    deleted_at DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_locations_company ON locations(company_id);
+CREATE INDEX IF NOT EXISTS idx_locations_parent ON locations(parent_id);
+
+CREATE TABLE IF NOT EXISTS asset_models (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id      INTEGER NOT NULL,
+    name            TEXT NOT NULL,
+    category_id     INTEGER NOT NULL DEFAULT 0,
+    manufacturer_id INTEGER,
+    depreciation_id INTEGER,
+    eol_months      INTEGER NOT NULL DEFAULT 0,
+    remark          TEXT NOT NULL DEFAULT '',
+    created_at      DATETIME NOT NULL,
+    updated_at      DATETIME NOT NULL,
+    deleted_at      DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_models_company ON asset_models(company_id);
+CREATE INDEX IF NOT EXISTS idx_asset_models_category ON asset_models(category_id);
+CREATE INDEX IF NOT EXISTS idx_asset_models_manufacturer ON asset_models(manufacturer_id);
+CREATE INDEX IF NOT EXISTS idx_asset_models_depreciation ON asset_models(depreciation_id);
 `
 
 type SQLiteStore struct {
@@ -1516,4 +1576,532 @@ func (s *SQLiteStore) DeleteDepreciationRule(ctx context.Context, companyID, id 
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ==================== 维度治理（P1）：厂商/供应商/位置/型号库 ====================
+// 与 GormStore 同一套契约：名称 trim 落库、同公司唯一（软删除不占名）、
+// 公司边界（跨公司一律 NotFound）、keyword 模糊 + 分页倒序。
+// 维表被资产/型号/子位置引用的删除拦截在 API 层（SQLiteStore 测试库无 assets 表）
+
+// dimensionNameTaken 名称占用检查；table 为编译期字面量（禁止拼接用户输入），
+// id > 0 时排除自身（更新保留原名不算冲突）
+func (s *SQLiteStore) dimensionNameTaken(ctx context.Context, table string, companyID, id int64, name string) (bool, error) {
+	q := `SELECT COUNT(*) FROM ` + table + ` WHERE company_id = ? AND name = ? AND deleted_at IS NULL`
+	args := []any{companyID, name}
+	if id > 0 {
+		q += ` AND id <> ?`
+		args = append(args, id)
+	}
+	var cnt int64
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&cnt); err != nil {
+		return false, err
+	}
+	return cnt > 0, nil
+}
+
+// deleteDimension 软删除维表记录；幂等语义：不存在/跨公司一律 NotFound
+func (s *SQLiteStore) deleteDimension(ctx context.Context, table, what string, companyID, id int64) error {
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE `+table+` SET deleted_at = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		now, now, id, companyID)
+	if err != nil {
+		return fmt.Errorf("delete %s: %w", what, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// dimensionWhere 维表列表 WHERE 片段（公司边界 + 可选名称模糊），
+// 返回占位符条件与参数（keyword 追加时参数顺序与占位符一致）
+func dimensionWhere(companyID int64, keyword string) (string, []any) {
+	where := `company_id = ? AND deleted_at IS NULL`
+	args := []any{companyID}
+	if kw := strings.TrimSpace(keyword); kw != "" {
+		where += ` AND name LIKE ?`
+		args = append(args, "%"+kw+"%")
+	}
+	return where, args
+}
+
+// nullableInt64 *int64 → SQL 可空参数（nil 转 NULL）
+func nullableInt64(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// ---- 厂商 ----
+
+const manufacturerColumns = `id, company_id, name, remark, created_at, updated_at`
+
+func scanManufacturerRow(row interface{ Scan(...any) error }) (model.Manufacturer, error) {
+	var m model.Manufacturer
+	err := row.Scan(&m.ID, &m.CompanyID, &m.Name, &m.Remark, &m.CreatedAt, &m.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Manufacturer{}, ErrNotFound
+	}
+	if err != nil {
+		return model.Manufacturer{}, err
+	}
+	return m, nil
+}
+
+func (s *SQLiteStore) CreateManufacturer(ctx context.Context, m model.Manufacturer) (model.Manufacturer, error) {
+	name, err := validateDimension(m.CompanyID, m.Name)
+	if err != nil {
+		return model.Manufacturer{}, err
+	}
+	m.Name = name
+	taken, err := s.dimensionNameTaken(ctx, "manufacturers", m.CompanyID, 0, m.Name)
+	if err != nil {
+		return model.Manufacturer{}, fmt.Errorf("check manufacturer name: %w", err)
+	}
+	if taken {
+		return model.Manufacturer{}, ErrAlreadyExists
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO manufacturers (company_id, name, remark, created_at, updated_at) VALUES (?,?,?,?,?)`,
+		m.CompanyID, m.Name, m.Remark, now, now)
+	if err != nil {
+		return model.Manufacturer{}, fmt.Errorf("insert manufacturer: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.Manufacturer{}, fmt.Errorf("manufacturer id: %w", err)
+	}
+	m.ID, m.CreatedAt, m.UpdatedAt = id, now, now
+	return m, nil
+}
+
+func (s *SQLiteStore) ListManufacturers(ctx context.Context, f DimensionListFilter) ([]model.Manufacturer, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+	where, args := dimensionWhere(f.CompanyID, f.Keyword)
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM manufacturers WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count manufacturers: %w", err)
+	}
+	args = append(args, size, (page-1)*size)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+manufacturerColumns+` FROM manufacturers WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list manufacturers: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.Manufacturer, 0, size)
+	for rows.Next() {
+		m, err := scanManufacturerRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, m)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateManufacturer(ctx context.Context, m model.Manufacturer) (model.Manufacturer, error) {
+	name, err := validateDimension(m.CompanyID, m.Name)
+	if err != nil {
+		return model.Manufacturer{}, err
+	}
+	if m.ID == 0 {
+		return model.Manufacturer{}, fmt.Errorf("id required")
+	}
+	m.Name = name
+	taken, err := s.dimensionNameTaken(ctx, "manufacturers", m.CompanyID, m.ID, m.Name)
+	if err != nil {
+		return model.Manufacturer{}, fmt.Errorf("check manufacturer name: %w", err)
+	}
+	if taken {
+		return model.Manufacturer{}, ErrAlreadyExists
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE manufacturers SET name = ?, remark = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		m.Name, m.Remark, time.Now().UTC(), m.ID, m.CompanyID)
+	if err != nil {
+		return model.Manufacturer{}, fmt.Errorf("update manufacturer: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return model.Manufacturer{}, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return model.Manufacturer{}, ErrNotFound
+	}
+	return scanManufacturerRow(s.db.QueryRowContext(ctx,
+		`SELECT `+manufacturerColumns+` FROM manufacturers WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		m.ID, m.CompanyID))
+}
+
+func (s *SQLiteStore) DeleteManufacturer(ctx context.Context, companyID, id int64) error {
+	return s.deleteDimension(ctx, "manufacturers", "manufacturer", companyID, id)
+}
+
+// ---- 供应商 ----
+
+const supplierColumns = `id, company_id, name, contact_name, phone, remark, created_at, updated_at`
+
+func scanSupplierRow(row interface{ Scan(...any) error }) (model.Supplier, error) {
+	var sup model.Supplier
+	err := row.Scan(&sup.ID, &sup.CompanyID, &sup.Name, &sup.ContactName, &sup.Phone, &sup.Remark, &sup.CreatedAt, &sup.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Supplier{}, ErrNotFound
+	}
+	if err != nil {
+		return model.Supplier{}, err
+	}
+	return sup, nil
+}
+
+func (s *SQLiteStore) CreateSupplier(ctx context.Context, sup model.Supplier) (model.Supplier, error) {
+	name, err := validateDimension(sup.CompanyID, sup.Name)
+	if err != nil {
+		return model.Supplier{}, err
+	}
+	sup.Name = name
+	taken, err := s.dimensionNameTaken(ctx, "suppliers", sup.CompanyID, 0, sup.Name)
+	if err != nil {
+		return model.Supplier{}, fmt.Errorf("check supplier name: %w", err)
+	}
+	if taken {
+		return model.Supplier{}, ErrAlreadyExists
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO suppliers (company_id, name, contact_name, phone, remark, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?)`,
+		sup.CompanyID, sup.Name, sup.ContactName, sup.Phone, sup.Remark, now, now)
+	if err != nil {
+		return model.Supplier{}, fmt.Errorf("insert supplier: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.Supplier{}, fmt.Errorf("supplier id: %w", err)
+	}
+	sup.ID, sup.CreatedAt, sup.UpdatedAt = id, now, now
+	return sup, nil
+}
+
+func (s *SQLiteStore) ListSuppliers(ctx context.Context, f DimensionListFilter) ([]model.Supplier, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+	where, args := dimensionWhere(f.CompanyID, f.Keyword)
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM suppliers WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count suppliers: %w", err)
+	}
+	args = append(args, size, (page-1)*size)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+supplierColumns+` FROM suppliers WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list suppliers: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.Supplier, 0, size)
+	for rows.Next() {
+		sup, err := scanSupplierRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, sup)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateSupplier(ctx context.Context, sup model.Supplier) (model.Supplier, error) {
+	name, err := validateDimension(sup.CompanyID, sup.Name)
+	if err != nil {
+		return model.Supplier{}, err
+	}
+	if sup.ID == 0 {
+		return model.Supplier{}, fmt.Errorf("id required")
+	}
+	sup.Name = name
+	taken, err := s.dimensionNameTaken(ctx, "suppliers", sup.CompanyID, sup.ID, sup.Name)
+	if err != nil {
+		return model.Supplier{}, fmt.Errorf("check supplier name: %w", err)
+	}
+	if taken {
+		return model.Supplier{}, ErrAlreadyExists
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE suppliers SET name = ?, contact_name = ?, phone = ?, remark = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		sup.Name, sup.ContactName, sup.Phone, sup.Remark, time.Now().UTC(), sup.ID, sup.CompanyID)
+	if err != nil {
+		return model.Supplier{}, fmt.Errorf("update supplier: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return model.Supplier{}, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return model.Supplier{}, ErrNotFound
+	}
+	return scanSupplierRow(s.db.QueryRowContext(ctx,
+		`SELECT `+supplierColumns+` FROM suppliers WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		sup.ID, sup.CompanyID))
+}
+
+func (s *SQLiteStore) DeleteSupplier(ctx context.Context, companyID, id int64) error {
+	return s.deleteDimension(ctx, "suppliers", "supplier", companyID, id)
+}
+
+// ---- 位置库 ----
+
+const locationColumns = `id, company_id, name, parent_id, remark, created_at, updated_at`
+
+func scanLocationRow(row interface{ Scan(...any) error }) (model.Location, error) {
+	var (
+		l        model.Location
+		parentID sql.NullInt64
+	)
+	err := row.Scan(&l.ID, &l.CompanyID, &l.Name, &parentID, &l.Remark, &l.CreatedAt, &l.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Location{}, ErrNotFound
+	}
+	if err != nil {
+		return model.Location{}, err
+	}
+	if parentID.Valid {
+		pid := parentID.Int64
+		l.ParentID = &pid
+	}
+	return l, nil
+}
+
+func (s *SQLiteStore) CreateLocation(ctx context.Context, l model.Location) (model.Location, error) {
+	name, err := validateDimension(l.CompanyID, l.Name)
+	if err != nil {
+		return model.Location{}, err
+	}
+	l.Name = name
+	taken, err := s.dimensionNameTaken(ctx, "locations", l.CompanyID, 0, l.Name)
+	if err != nil {
+		return model.Location{}, fmt.Errorf("check location name: %w", err)
+	}
+	if taken {
+		return model.Location{}, ErrAlreadyExists
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO locations (company_id, name, parent_id, remark, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?)`,
+		l.CompanyID, l.Name, nullableInt64(l.ParentID), l.Remark, now, now)
+	if err != nil {
+		return model.Location{}, fmt.Errorf("insert location: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.Location{}, fmt.Errorf("location id: %w", err)
+	}
+	l.ID, l.CreatedAt, l.UpdatedAt = id, now, now
+	return l, nil
+}
+
+func (s *SQLiteStore) ListLocations(ctx context.Context, f DimensionListFilter) ([]model.Location, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+	where, args := dimensionWhere(f.CompanyID, f.Keyword)
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM locations WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count locations: %w", err)
+	}
+	args = append(args, size, (page-1)*size)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+locationColumns+` FROM locations WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list locations: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.Location, 0, size)
+	for rows.Next() {
+		l, err := scanLocationRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, l)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateLocation(ctx context.Context, l model.Location) (model.Location, error) {
+	name, err := validateDimension(l.CompanyID, l.Name)
+	if err != nil {
+		return model.Location{}, err
+	}
+	if l.ID == 0 {
+		return model.Location{}, fmt.Errorf("id required")
+	}
+	l.Name = name
+	taken, err := s.dimensionNameTaken(ctx, "locations", l.CompanyID, l.ID, l.Name)
+	if err != nil {
+		return model.Location{}, fmt.Errorf("check location name: %w", err)
+	}
+	if taken {
+		return model.Location{}, ErrAlreadyExists
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE locations SET name = ?, parent_id = ?, remark = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		l.Name, nullableInt64(l.ParentID), l.Remark, time.Now().UTC(), l.ID, l.CompanyID)
+	if err != nil {
+		return model.Location{}, fmt.Errorf("update location: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return model.Location{}, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return model.Location{}, ErrNotFound
+	}
+	return scanLocationRow(s.db.QueryRowContext(ctx,
+		`SELECT `+locationColumns+` FROM locations WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		l.ID, l.CompanyID))
+}
+
+func (s *SQLiteStore) DeleteLocation(ctx context.Context, companyID, id int64) error {
+	return s.deleteDimension(ctx, "locations", "location", companyID, id)
+}
+
+// ---- 型号库 ----
+
+const assetModelColumns = `id, company_id, name, category_id, manufacturer_id, depreciation_id, eol_months, remark, created_at, updated_at`
+
+func scanAssetModelRow(row interface{ Scan(...any) error }) (model.AssetModel, error) {
+	var (
+		m            model.AssetModel
+		manufacturer sql.NullInt64
+		depreciation sql.NullInt64
+	)
+	err := row.Scan(&m.ID, &m.CompanyID, &m.Name, &m.CategoryID, &manufacturer, &depreciation,
+		&m.EOLMonths, &m.Remark, &m.CreatedAt, &m.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.AssetModel{}, ErrNotFound
+	}
+	if err != nil {
+		return model.AssetModel{}, err
+	}
+	if manufacturer.Valid {
+		id := manufacturer.Int64
+		m.ManufacturerID = &id
+	}
+	if depreciation.Valid {
+		id := depreciation.Int64
+		m.DepreciationID = &id
+	}
+	return m, nil
+}
+
+func (s *SQLiteStore) CreateAssetModel(ctx context.Context, m model.AssetModel) (model.AssetModel, error) {
+	name, err := validateDimension(m.CompanyID, m.Name)
+	if err != nil {
+		return model.AssetModel{}, err
+	}
+	m.Name = name
+	taken, err := s.dimensionNameTaken(ctx, "asset_models", m.CompanyID, 0, m.Name)
+	if err != nil {
+		return model.AssetModel{}, fmt.Errorf("check asset model name: %w", err)
+	}
+	if taken {
+		return model.AssetModel{}, ErrAlreadyExists
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO asset_models
+		 (company_id, name, category_id, manufacturer_id, depreciation_id, eol_months, remark, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		m.CompanyID, m.Name, m.CategoryID, nullableInt64(m.ManufacturerID),
+		nullableInt64(m.DepreciationID), m.EOLMonths, m.Remark, now, now)
+	if err != nil {
+		return model.AssetModel{}, fmt.Errorf("insert asset model: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.AssetModel{}, fmt.Errorf("asset model id: %w", err)
+	}
+	m.ID, m.CreatedAt, m.UpdatedAt = id, now, now
+	return m, nil
+}
+
+func (s *SQLiteStore) ListAssetModels(ctx context.Context, f AssetModelListFilter) ([]model.AssetModel, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+	where, args := dimensionWhere(f.CompanyID, f.Keyword)
+	if f.CategoryID > 0 {
+		where += ` AND category_id = ?`
+		args = append(args, f.CategoryID)
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM asset_models WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count asset models: %w", err)
+	}
+	args = append(args, size, (page-1)*size)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+assetModelColumns+` FROM asset_models WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list asset models: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.AssetModel, 0, size)
+	for rows.Next() {
+		m, err := scanAssetModelRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, m)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateAssetModel(ctx context.Context, m model.AssetModel) (model.AssetModel, error) {
+	name, err := validateDimension(m.CompanyID, m.Name)
+	if err != nil {
+		return model.AssetModel{}, err
+	}
+	if m.ID == 0 {
+		return model.AssetModel{}, fmt.Errorf("id required")
+	}
+	m.Name = name
+	taken, err := s.dimensionNameTaken(ctx, "asset_models", m.CompanyID, m.ID, m.Name)
+	if err != nil {
+		return model.AssetModel{}, fmt.Errorf("check asset model name: %w", err)
+	}
+	if taken {
+		return model.AssetModel{}, ErrAlreadyExists
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE asset_models SET name = ?, category_id = ?, manufacturer_id = ?, depreciation_id = ?,
+		 eol_months = ?, remark = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		m.Name, m.CategoryID, nullableInt64(m.ManufacturerID), nullableInt64(m.DepreciationID),
+		m.EOLMonths, m.Remark, time.Now().UTC(), m.ID, m.CompanyID)
+	if err != nil {
+		return model.AssetModel{}, fmt.Errorf("update asset model: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return model.AssetModel{}, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return model.AssetModel{}, ErrNotFound
+	}
+	return scanAssetModelRow(s.db.QueryRowContext(ctx,
+		`SELECT `+assetModelColumns+` FROM asset_models WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		m.ID, m.CompanyID))
+}
+
+func (s *SQLiteStore) DeleteAssetModel(ctx context.Context, companyID, id int64) error {
+	return s.deleteDimension(ctx, "asset_models", "asset model", companyID, id)
 }

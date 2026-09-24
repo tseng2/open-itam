@@ -105,6 +105,18 @@ type Asset struct {
 	NetValue       float64    `gorm:"type:decimal(10,2)" json:"net_value"`                    // 净值
 	DepreciationID *int64     `gorm:"index" json:"depreciation_id"`                            // 关联折旧规则；为空不参与自动折旧（P0-β）
 
+	// 维度治理外键（P1）：Brand / ModelName / Location 自由文本 → 维表外键，
+	// 供应商为新增维度。为空时回退展示自由文本快照（存量数据兼容）；
+	// 挂接时服务端把维度名写回 Brand / ModelName / Location 快照列
+	ManufacturerID *int64 `gorm:"index" json:"manufacturer_id"` // 厂商（manufacturers）
+	ModelID         *int64 `gorm:"index" json:"model_id"`         // 型号（asset_models）
+	SupplierID      *int64 `gorm:"index" json:"supplier_id"`      // 供应商（suppliers）
+	LocationID      *int64 `gorm:"index" json:"location_id"`      // 位置（locations）
+
+	// 供应商富化展示（API 层批量填充，不落库；其余三个维度直接复用
+	// Brand / ModelName / Location 快照列承载富化值，前端零改动）
+	SupplierName string `gorm:"-" json:"supplier_name,omitempty"`
+
 	// 财务维度（列管资产支持，P0-β）：off_book 与运营状态正交——
 	// 折旧完且财务销账的资产转为"列管"继续给员工使用，报废变卖才离场。
 	// 展示层派生"列管"标签（off_book && 未报废），严禁塞进 Status 状态机

@@ -124,6 +124,26 @@ type Store interface {
 	GetDepreciationRule(ctx context.Context, companyID, id int64) (model.DepreciationRule, error)
 	UpdateDepreciationRule(ctx context.Context, r model.DepreciationRule) (model.DepreciationRule, error)
 	DeleteDepreciationRule(ctx context.Context, companyID, id int64) error
+	// 维度治理（P1）：厂商/供应商/位置/型号库四张维表 CRUD。
+	// 名称同公司唯一在 store 层校验（软删除记录不占名，可重建）；
+	// 维表被资产/型号/子位置引用时的删除拦截在 API 层完成（需查 assets 表，
+	// SQLiteStore 测试库无该表），store 只管维表本身
+	CreateManufacturer(ctx context.Context, m model.Manufacturer) (model.Manufacturer, error)
+	ListManufacturers(ctx context.Context, f DimensionListFilter) ([]model.Manufacturer, int64, error)
+	UpdateManufacturer(ctx context.Context, m model.Manufacturer) (model.Manufacturer, error)
+	DeleteManufacturer(ctx context.Context, companyID, id int64) error
+	CreateSupplier(ctx context.Context, s model.Supplier) (model.Supplier, error)
+	ListSuppliers(ctx context.Context, f DimensionListFilter) ([]model.Supplier, int64, error)
+	UpdateSupplier(ctx context.Context, s model.Supplier) (model.Supplier, error)
+	DeleteSupplier(ctx context.Context, companyID, id int64) error
+	CreateLocation(ctx context.Context, l model.Location) (model.Location, error)
+	ListLocations(ctx context.Context, f DimensionListFilter) ([]model.Location, int64, error)
+	UpdateLocation(ctx context.Context, l model.Location) (model.Location, error)
+	DeleteLocation(ctx context.Context, companyID, id int64) error
+	CreateAssetModel(ctx context.Context, m model.AssetModel) (model.AssetModel, error)
+	ListAssetModels(ctx context.Context, f AssetModelListFilter) ([]model.AssetModel, int64, error)
+	UpdateAssetModel(ctx context.Context, m model.AssetModel) (model.AssetModel, error)
+	DeleteAssetModel(ctx context.Context, companyID, id int64) error
 	Close() error
 }
 
@@ -160,4 +180,21 @@ type DepreciationRuleListFilter struct {
 	CompanyID int64
 	Page      int
 	PageSize  int
+}
+
+// DimensionListFilter 维表列表查询条件：Keyword 模糊匹配名称
+type DimensionListFilter struct {
+	CompanyID int64
+	Keyword   string
+	Page      int
+	PageSize  int
+}
+
+// AssetModelListFilter 型号库列表查询条件：CategoryID 0 = 不过滤
+type AssetModelListFilter struct {
+	CompanyID  int64
+	CategoryID int64
+	Keyword    string
+	Page       int
+	PageSize   int
 }
