@@ -183,6 +183,24 @@ CREATE TABLE IF NOT EXISTS asset_requests (
 CREATE INDEX IF NOT EXISTS idx_asset_requests_company_status ON asset_requests(company_id, status);
 CREATE INDEX IF NOT EXISTS idx_asset_requests_asset_status ON asset_requests(asset_id, status);
 CREATE INDEX IF NOT EXISTS idx_asset_requests_applicant ON asset_requests(applicant_id);
+
+CREATE TABLE IF NOT EXISTS depreciations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id  INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    months      INTEGER NOT NULL,
+    floor_type  TEXT NOT NULL DEFAULT 'percent',
+    floor_val   REAL NOT NULL DEFAULT 0,
+    stages      TEXT NOT NULL DEFAULT '',
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    remark      TEXT NOT NULL DEFAULT '',
+    created_at  DATETIME NOT NULL,
+    updated_at  DATETIME NOT NULL,
+    deleted_at  DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_depreciations_company ON depreciations(company_id);
+CREATE INDEX IF NOT EXISTS idx_depreciations_enabled ON depreciations(enabled);
 `
 
 type SQLiteStore struct {
@@ -1372,4 +1390,130 @@ func (s *SQLiteStore) RejectAssetRequest(ctx context.Context, companyID, id int6
 
 func (s *SQLiteStore) CancelAssetRequest(ctx context.Context, companyID, id int64) (model.AssetRequest, error) {
 	return s.transitionAssetRequest(ctx, companyID, id, model.AssetRequestStatusCanceled, nil)
+}
+
+// ---- 折旧规则（阶段五 P0-β）----
+
+const depreciationRuleColumns = `id, company_id, name, months, floor_type, floor_val, stages, enabled, remark, created_at, updated_at`
+
+func scanDepreciationRuleRow(row interface{ Scan(...any) error }) (model.DepreciationRule, error) {
+	var (
+		r       model.DepreciationRule
+		enabled int
+	)
+	err := row.Scan(&r.ID, &r.CompanyID, &r.Name, &r.Months, &r.FloorType, &r.FloorVal,
+		&r.Stages, &enabled, &r.Remark, &r.CreatedAt, &r.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.DepreciationRule{}, ErrNotFound
+	}
+	if err != nil {
+		return model.DepreciationRule{}, err
+	}
+	r.Enabled = enabled == 1
+	return r, nil
+}
+
+func (s *SQLiteStore) CreateDepreciationRule(ctx context.Context, r model.DepreciationRule) (model.DepreciationRule, error) {
+	if err := validateDepreciationRule(r); err != nil {
+		return model.DepreciationRule{}, err
+	}
+	if r.FloorType == "" {
+		r.FloorType = "percent"
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO depreciations
+		 (company_id, name, months, floor_type, floor_val, stages, enabled, remark, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		r.CompanyID, r.Name, r.Months, r.FloorType, r.FloorVal, r.Stages,
+		sqliteBool(r.Enabled), r.Remark, now, now)
+	if err != nil {
+		return model.DepreciationRule{}, fmt.Errorf("insert depreciation rule: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.DepreciationRule{}, fmt.Errorf("depreciation rule id: %w", err)
+	}
+	r.ID = id
+	r.CreatedAt, r.UpdatedAt = now, now
+	return r, nil
+}
+
+func (s *SQLiteStore) ListDepreciationRules(ctx context.Context, f DepreciationRuleListFilter) ([]model.DepreciationRule, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM depreciations WHERE company_id = ? AND deleted_at IS NULL`,
+		f.CompanyID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count depreciation rules: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+depreciationRuleColumns+` FROM depreciations
+		 WHERE company_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ? OFFSET ?`,
+		f.CompanyID, size, (page-1)*size)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list depreciation rules: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.DepreciationRule, 0, size)
+	for rows.Next() {
+		r, err := scanDepreciationRuleRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, r)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) GetDepreciationRule(ctx context.Context, companyID, id int64) (model.DepreciationRule, error) {
+	return scanDepreciationRuleRow(s.db.QueryRowContext(ctx,
+		`SELECT `+depreciationRuleColumns+` FROM depreciations
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`, id, companyID))
+}
+
+func (s *SQLiteStore) UpdateDepreciationRule(ctx context.Context, r model.DepreciationRule) (model.DepreciationRule, error) {
+	if err := validateDepreciationRule(r); err != nil {
+		return model.DepreciationRule{}, err
+	}
+	if r.ID == 0 {
+		return model.DepreciationRule{}, fmt.Errorf("id required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE depreciations SET name = ?, months = ?, floor_type = ?, floor_val = ?,
+		 stages = ?, enabled = ?, remark = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		r.Name, r.Months, r.FloorType, r.FloorVal, r.Stages,
+		sqliteBool(r.Enabled), r.Remark, time.Now().UTC(), r.ID, r.CompanyID)
+	if err != nil {
+		return model.DepreciationRule{}, fmt.Errorf("update depreciation rule: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return model.DepreciationRule{}, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return model.DepreciationRule{}, ErrNotFound
+	}
+	return s.GetDepreciationRule(ctx, r.CompanyID, r.ID)
+}
+
+func (s *SQLiteStore) DeleteDepreciationRule(ctx context.Context, companyID, id int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE depreciations SET deleted_at = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		time.Now().UTC(), time.Now().UTC(), id, companyID)
+	if err != nil {
+		return fmt.Errorf("delete depreciation rule: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

@@ -102,6 +102,9 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 设备申请（阶段五 P0-β，登录用户提交/撤回 + admin 审批同事务绑定领用人）
 	h.mux.Handle("/api/v1/asset-requests", ginEngine)
 	h.mux.Handle("/api/v1/asset-requests/", ginEngine)
+	// 折旧规则引擎（阶段五 P0-β，读面登录可访问 + 写面 admin；销账/恢复挂 /api/v1/assets 已有前缀）
+	h.mux.Handle("/api/v1/depreciations", ginEngine)
+	h.mux.Handle("/api/v1/depreciations/", ginEngine)
 
 	return h
 }

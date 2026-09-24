@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"itagent/internal/server/api"
+	"itagent/internal/server/depreciation"
 	"itagent/internal/server/store"
 	"itagent/internal/server/ui"
 	"itagent/internal/server/webhook"
@@ -93,6 +94,11 @@ func main() {
 	engineCtx, stopEngine := context.WithCancel(context.Background())
 	defer stopEngine()
 	go alertEngine.Run(engineCtx, webhook.DefaultScanInterval)
+
+	// P0-β 折旧引擎：定时按规则刷资产净值（默认每小时，净值只在整月边界
+	// 变化）；规则/台账编辑有手动重算入口，无需更密的扫描
+	depEngine := depreciation.NewEngine(db)
+	go depEngine.Run(engineCtx, depreciation.DefaultScanInterval)
 
 	log.Printf("itagent server listening on %s, db=%s", cfg.Listen, cfg.DBPath)
 	if err := http.ListenAndServe(cfg.Listen, root); err != nil {

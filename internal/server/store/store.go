@@ -116,6 +116,14 @@ type Store interface {
 	GetAssetRequest(ctx context.Context, companyID, id int64) (model.AssetRequest, error)
 	RejectAssetRequest(ctx context.Context, companyID, id int64, approverID int64, remark string, now time.Time) (model.AssetRequest, error)
 	CancelAssetRequest(ctx context.Context, companyID, id int64) (model.AssetRequest, error)
+	// 折旧规则（阶段五 P0-β）：规则 CRUD，引擎按规则定时刷资产净值。
+	// 规则被资产引用时的删除拦截在 API 层完成（需查 assets 表，
+	// SQLiteStore 测试库无该表），store 只管规则表本身
+	CreateDepreciationRule(ctx context.Context, r model.DepreciationRule) (model.DepreciationRule, error)
+	ListDepreciationRules(ctx context.Context, f DepreciationRuleListFilter) ([]model.DepreciationRule, int64, error)
+	GetDepreciationRule(ctx context.Context, companyID, id int64) (model.DepreciationRule, error)
+	UpdateDepreciationRule(ctx context.Context, r model.DepreciationRule) (model.DepreciationRule, error)
+	DeleteDepreciationRule(ctx context.Context, companyID, id int64) error
 	Close() error
 }
 
@@ -145,4 +153,11 @@ type AssetRequestListFilter struct {
 	AssetID     int64
 	Page        int
 	PageSize    int
+}
+
+// DepreciationRuleListFilter 折旧规则列表查询条件（公司维度全量，量级小）
+type DepreciationRuleListFilter struct {
+	CompanyID int64
+	Page      int
+	PageSize  int
 }

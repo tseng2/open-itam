@@ -70,7 +70,8 @@ type ListAssetQuery struct {
 	U8OrderNo string `form:"u8_order_no"`
 	Status    int    `form:"status"`
 	AssetTag  string `form:"asset_tag"`
-	Keyword   string `form:"keyword"` // 全文模糊搜索：编码/SN/MAC/IP/使用人等台账字段
+	Keyword   string `form:"keyword"`  // 全文模糊搜索：编码/SN/MAC/IP/使用人等台账字段
+	OffBook   *bool  `form:"off_book"` // 列管资产筛选：true 仅财务销账（列管）/ false 仅在册
 	Page      int    `form:"page,default=1"`
 	PageSize  int    `form:"page_size,default=20"`
 }
@@ -92,6 +93,9 @@ func (h *AssetHandler) List(c *gin.Context) {
 	}
 	if query.Status > 0 {
 		db = db.Where("status = ?", query.Status)
+	}
+	if query.OffBook != nil {
+		db = db.Where("off_book = ?", *query.OffBook)
 	}
 	if query.AssetTag != "" {
 		db = db.Where("asset_tag LIKE ?", "%"+query.AssetTag+"%")
@@ -194,6 +198,7 @@ type CreateAssetRequest struct {
 	OriginalPrice  float64    `json:"original_price"`
 	Price          float64    `json:"price"` // 兼容旧参数名
 	NetValue       float64    `json:"net_value"`
+	DepreciationID *int64     `json:"depreciation_id"` // 折旧规则挂接；为空不参与自动折旧（P0-β）
 	SecEncrypted   bool       `json:"sec_encrypted"`
 	Remark         string     `json:"remark"`
 }
@@ -240,6 +245,7 @@ func (h *AssetHandler) Create(c *gin.Context) {
 		WarrantyPeriod: req.WarrantyPeriod,
 		OriginalPrice:  price,
 		NetValue:       req.NetValue,
+		DepreciationID: req.DepreciationID,
 		SecEncrypted:   req.SecEncrypted,
 		Remark:         req.Remark,
 	}
@@ -306,6 +312,7 @@ type UpdateAssetRequest struct {
 	WarrantyPeriod *string    `json:"warranty_period"`
 	OriginalPrice  *float64   `json:"original_price"`
 	NetValue       *float64   `json:"net_value"`
+	DepreciationID *int64     `json:"depreciation_id"` // >0 挂接折旧规则；0 解除挂接（不参与自动折旧）
 	SecEncrypted   *bool      `json:"sec_encrypted"`
 	Remark         *string    `json:"remark"`
 }
@@ -379,6 +386,13 @@ func (h *AssetHandler) Update(c *gin.Context) {
 	}
 	if req.NetValue != nil {
 		updates["net_value"] = *req.NetValue
+	}
+	if req.DepreciationID != nil {
+		if *req.DepreciationID > 0 {
+			updates["depreciation_id"] = *req.DepreciationID
+		} else {
+			updates["depreciation_id"] = nil // 0 解除折旧规则挂接
+		}
 	}
 	if req.SecEncrypted != nil {
 		updates["sec_encrypted"] = *req.SecEncrypted

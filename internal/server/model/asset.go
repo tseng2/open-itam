@@ -52,6 +52,14 @@ type Asset struct {
 	WarrantyPeriod string     `gorm:"type:varchar(64)" json:"warranty_period"`                // 保修期
 	OriginalPrice  float64    `gorm:"type:decimal(10,2)" json:"original_price"`               // 原值（不含税）
 	NetValue       float64    `gorm:"type:decimal(10,2)" json:"net_value"`                    // 净值
+	DepreciationID *int64     `gorm:"index" json:"depreciation_id"`                            // 关联折旧规则；为空不参与自动折旧（P0-β）
+
+	// 财务维度（列管资产支持，P0-β）：off_book 与运营状态正交——
+	// 折旧完且财务销账的资产转为"列管"继续给员工使用，报废变卖才离场。
+	// 展示层派生"列管"标签（off_book && 未报废），严禁塞进 Status 状态机
+	OffBook   bool       `gorm:"default:false;index" json:"off_book"` // 财务销账标记（账销物留）
+	OffBookAt *time.Time `json:"off_book_at"`                        // 销账日期
+
 	SecEncrypted   bool       `gorm:"default:false" json:"sec_encrypted"`                     // 加密软件管理（是否绿盾纳管）
 	Remark         string     `gorm:"type:text" json:"remark"`                                // 备注
 	Device         *Device    `gorm:"foreignKey:AssetID" json:"device,omitempty"`             // 关联绑定的动态采集设备
