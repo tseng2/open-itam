@@ -55,7 +55,14 @@
   - [x] 冷却去重：`webhook_alert_states` 按 (company, asset, type) 唯一键，窗口内不重复推送，期满未处理再提醒，失败自动重试
 
 ### P0-β 复刻线：CIYO 对标三件套（A 线完成后接续）
-- [ ] **盘点任务**：`stocktakes`/`stocktake_items` 状态机 + 标签 PDF + 免登录移动扫码页 + 明细核对
+- [x] **盘点任务**（2026-09-24 完成：store 测试 11 项 + gin API 9 项 + 标签渲染 4 项全绿）
+  - [x] 模型：`stocktakes`（draft10→processing20→finished30/canceled40）+ `stocktake_items`（pending10→normal20/lost30/damaged40/scrapped50，asset_tag 快照 + expected/actual location + scanned_by/at），TDD 先行
+  - [x] Store 接口 + GormStore + SQLiteStore 双实现；扫码盘点码只存 SHA-256（明文仅 start/rotate 一次性返回，finish/cancel 即失效，可轮换止血）
+  - [x] gin admin API（创建圈定快照/开始/明细核对修正/结束/取消/盘点码轮换）+ 双层挂载表（`/api/v1/stocktakes` + `/api/public`）
+  - [x] 免登录移动扫码面 `/api/public/stocktakes/*`（IP 限流 120/min + 白名单字段视图 + 批量 ≤100）：Vue 移动页 `/m/t/:token` → `/m/scan` → `/a/:number`（标签 QR 直达）
+  - [x] 标签 PDF：`internal/server/label` 纯 Go（go-pdf/fpdf + boombuler/barcode 零 CGO），A4 3×7，QR 直达移动核对页
+  - [x] A3 协同：核对"正常"自动确认 pending 的 hardware_change 待审事件；异常结果（丢失/损坏/报废）记 stocktake AssetEvent
+  - [x] Web UI：盘点任务管理页（进度条/明细抽屉/修正核对/盘点码 QR 对话框/标签 PDF 下载）
 - [ ] **设备申请审批流**：`asset_requests` 状态机 + 审批即绑定领用人（单事务）
 - [ ] **折旧规则引擎**：`depreciations` stages JSON 阶梯匹配 + 残值下限 + 定时任务刷净值
 
