@@ -35,6 +35,9 @@ func RegisterAssetRoutes(r *gin.RouterGroup, offlineThreshold time.Duration) {
 		assets.GET("/:id/versions", h.ListVersions)
 		assets.POST("/:id/events/:event_id/approve", h.ApproveEvent)
 	}
+	// Excel 批量导入导出（P1）：同前缀两组注册（gin 允许静态段与 :id 共存），
+	// 导入/导出/模板均为资产管理动作，仅 admin/super_admin
+	registerAssetExchangeRoutes(r)
 }
 
 func (h *AssetHandler) ListEvents(c *gin.Context) {
@@ -76,15 +79,9 @@ type ListAssetQuery struct {
 	PageSize  int    `form:"page_size,default=20"`
 }
 
-func (h *AssetHandler) List(c *gin.Context) {
-	var query ListAssetQuery
-	if err := c.ShouldBindQuery(&query); err != nil {
-		Fail(c, http.StatusBadRequest, 40001, err.Error())
-		return
-	}
-
-	db := store.DB.Model(&model.Asset{})
-
+// applyAssetListFilter 台账列表与 Excel 导出共用的查询过滤（导出忽略分页参数）。
+// 过滤口径只此一处，列表与导出结果永远一致
+func applyAssetListFilter(db *gorm.DB, query ListAssetQuery) *gorm.DB {
 	if query.CompanyID > 0 {
 		db = db.Where("company_id = ?", query.CompanyID)
 	}
@@ -123,6 +120,17 @@ func (h *AssetHandler) List(c *gin.Context) {
 			Joins("LEFT JOIN users ON users.id = assets.user_id").
 			Where(strings.Join(conds, " OR "), args...)
 	}
+	return db
+}
+
+func (h *AssetHandler) List(c *gin.Context) {
+	var query ListAssetQuery
+	if err := c.ShouldBindQuery(&query); err != nil {
+		Fail(c, http.StatusBadRequest, 40001, err.Error())
+		return
+	}
+
+	db := applyAssetListFilter(store.DB.Model(&model.Asset{}), query)
 
 	var total int64
 	db.Count(&total)
