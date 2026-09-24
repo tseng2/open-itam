@@ -1,6 +1,8 @@
 data/
 temp/
 HANDOFF.md
+HANDOFF-*.md
+HANDOFF-*.MD
 cmd/itagent-setup/assets/
 web/node_modules/
 internal/server/ui/dist/
