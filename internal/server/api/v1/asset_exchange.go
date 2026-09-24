@@ -65,6 +65,11 @@ func (h *AssetExchangeHandler) Export(c *gin.Context) {
 		Fail(c, http.StatusInternalServerError, 50001, "failed to query assets")
 		return
 	}
+	// 维度富化（P1）：外键存在时以维表名覆盖导出值，与列表页所见即所得
+	if err := enrichAssetsDimensions(c.Request.Context(), items); err != nil {
+		Fail(c, http.StatusInternalServerError, 50001, "failed to enrich dimensions")
+		return
+	}
 
 	rows := make([]assetexcel.Row, 0, len(items))
 	for _, a := range items {

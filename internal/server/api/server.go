@@ -105,6 +105,15 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 折旧规则引擎（阶段五 P0-β，读面登录可访问 + 写面 admin；销账/恢复挂 /api/v1/assets 已有前缀）
 	h.mux.Handle("/api/v1/depreciations", ginEngine)
 	h.mux.Handle("/api/v1/depreciations/", ginEngine)
+	// 维度治理（P1）：厂商/供应商/位置库/型号库，读面登录可访问 + 写面 admin
+	h.mux.Handle("/api/v1/manufacturers", ginEngine)
+	h.mux.Handle("/api/v1/manufacturers/", ginEngine)
+	h.mux.Handle("/api/v1/suppliers", ginEngine)
+	h.mux.Handle("/api/v1/suppliers/", ginEngine)
+	h.mux.Handle("/api/v1/locations", ginEngine)
+	h.mux.Handle("/api/v1/locations/", ginEngine)
+	h.mux.Handle("/api/v1/asset-models", ginEngine)
+	h.mux.Handle("/api/v1/asset-models/", ginEngine)
 
 	return h
 }

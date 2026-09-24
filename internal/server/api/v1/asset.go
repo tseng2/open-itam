@@ -75,6 +75,11 @@ type ListAssetQuery struct {
 	AssetTag  string `form:"asset_tag"`
 	Keyword   string `form:"keyword"`  // 全文模糊搜索：编码/SN/MAC/IP/使用人等台账字段
 	OffBook   *bool  `form:"off_book"` // 列管资产筛选：true 仅财务销账（列管）/ false 仅在册
+	// 维度治理筛选（P1）：按维表外键精确过滤（0 = 不过滤）
+	ManufacturerID int64 `form:"manufacturer_id"`
+	ModelID         int64 `form:"model_id"`
+	SupplierID      int64 `form:"supplier_id"`
+	LocationID      int64 `form:"location_id"`
 	Page      int    `form:"page,default=1"`
 	PageSize  int    `form:"page_size,default=20"`
 }
@@ -93,6 +98,19 @@ func applyAssetListFilter(db *gorm.DB, query ListAssetQuery) *gorm.DB {
 	}
 	if query.OffBook != nil {
 		db = db.Where("off_book = ?", *query.OffBook)
+	}
+	// 维度治理筛选（P1）：外键列只在 assets 表，JOIN 不产生列名歧义
+	if query.ManufacturerID > 0 {
+		db = db.Where("manufacturer_id = ?", query.ManufacturerID)
+	}
+	if query.ModelID > 0 {
+		db = db.Where("model_id = ?", query.ModelID)
+	}
+	if query.SupplierID > 0 {
+		db = db.Where("supplier_id = ?", query.SupplierID)
+	}
+	if query.LocationID > 0 {
+		db = db.Where("location_id = ?", query.LocationID)
 	}
 	if query.AssetTag != "" {
 		db = db.Where("asset_tag LIKE ?", "%"+query.AssetTag+"%")
@@ -146,6 +164,12 @@ func (h *AssetHandler) List(c *gin.Context) {
 
 	if err := h.enrichPresence(c.Request.Context(), items); err != nil {
 		Fail(c, http.StatusInternalServerError, 50001, "failed to resolve presence")
+		return
+	}
+	// 维度富化（P1）：外键存在时以维表名覆盖 brand/model/location 展示，
+	// 与详情/导出共用 enrichAssetsDimensions，口径单源
+	if err := enrichAssetsDimensions(c.Request.Context(), items); err != nil {
+		Fail(c, http.StatusInternalServerError, 50001, "failed to enrich dimensions")
 		return
 	}
 
@@ -206,9 +230,16 @@ type CreateAssetRequest struct {
 	OriginalPrice  float64    `json:"original_price"`
 	Price          float64    `json:"price"` // 兼容旧参数名
 	NetValue       float64    `json:"net_value"`
-	DepreciationID *int64     `json:"depreciation_id"` // 折旧规则挂接；为空不参与自动折旧（P0-β）
+	DepreciationID *int64     `json:"depreciation_id"` // 折旧规则挂接；为空不参与自动折旧（P0-β）；未指定且型号库预挂规则时自动继承
 	SecEncrypted   bool       `json:"sec_encrypted"`
 	Remark         string     `json:"remark"`
+
+	// 维度治理外键（P1）：null/0 = 不挂接；挂接时校验存在+同公司，
+	// 型号类别须匹配；brand/model/location 快照由服务端写回
+	ManufacturerID *int64 `json:"manufacturer_id"`
+	ModelID        *int64 `json:"model_id"`
+	SupplierID     *int64 `json:"supplier_id"`
+	LocationID     *int64 `json:"location_id"`
 }
 
 func (h *AssetHandler) Create(c *gin.Context) {
@@ -224,6 +255,13 @@ func (h *AssetHandler) Create(c *gin.Context) {
 	price := req.OriginalPrice
 	if price == 0 && req.Price > 0 {
 		price = req.Price
+	}
+
+	// 维度外键校验与解析（P1）：失败即终止，不落半截台账
+	links, ok := resolveAssetDimensionLinks(c, req.CompanyID, req.CategoryID,
+		req.ManufacturerID, req.ModelID, req.SupplierID, req.LocationID)
+	if !ok {
+		return
 	}
 
 	asset := model.Asset{
@@ -257,6 +295,8 @@ func (h *AssetHandler) Create(c *gin.Context) {
 		SecEncrypted:   req.SecEncrypted,
 		Remark:         req.Remark,
 	}
+	// 维度挂接落地（P1）：外键 + 快照写回 + 折旧规则继承
+	applyAssetDimensionLinks(&asset, links, req.DepreciationID)
 
 	if err := store.DB.Create(&asset).Error; err != nil {
 		Fail(c, http.StatusInternalServerError, 50002, "failed to create asset: "+err.Error())
@@ -272,7 +312,13 @@ func (h *AssetHandler) Create(c *gin.Context) {
 	}
 	store.DB.Create(&event)
 
-	Success(c, asset)
+	// 响应富化（供应商名），与列表/详情口径一致；切片元素是值拷贝，
+	// 富化后必须回取切片内容再响应
+	enriched := []model.Asset{asset}
+	if err := enrichAssetsDimensions(c.Request.Context(), enriched); err != nil {
+		c.Error(err)
+	}
+	Success(c, enriched[0])
 }
 
 func (h *AssetHandler) Get(c *gin.Context) {
@@ -288,7 +334,15 @@ func (h *AssetHandler) Get(c *gin.Context) {
 		return
 	}
 
-	Success(c, asset)
+	// 维度富化（P1）：外键存在时以维表名覆盖 brand/model/location 展示
+	// （切片元素是值拷贝，富化后回取切片内容再响应）
+	enriched := []model.Asset{asset}
+	if err := enrichAssetsDimensions(c.Request.Context(), enriched); err != nil {
+		Fail(c, http.StatusInternalServerError, 50001, "failed to enrich dimensions")
+		return
+	}
+
+	Success(c, enriched[0])
 }
 
 // UpdateAssetRequest 台账字段维护请求。使用指针类型以区分"未传"与"显式清空"，
@@ -323,6 +377,13 @@ type UpdateAssetRequest struct {
 	DepreciationID *int64     `json:"depreciation_id"` // >0 挂接折旧规则；0 解除挂接（不参与自动折旧）
 	SecEncrypted   *bool      `json:"sec_encrypted"`
 	Remark         *string    `json:"remark"`
+
+	// 维度治理外键（P1）：nil 不动；>0 挂接（校验存在+同公司，型号类别
+	// 须匹配，快照同步写回）；0 解除挂接（快照文本保留）
+	ManufacturerID *int64 `json:"manufacturer_id"`
+	ModelID        *int64 `json:"model_id"`
+	SupplierID     *int64 `json:"supplier_id"`
+	LocationID     *int64 `json:"location_id"`
 }
 
 func (h *AssetHandler) Update(c *gin.Context) {
@@ -405,6 +466,11 @@ func (h *AssetHandler) Update(c *gin.Context) {
 	if req.SecEncrypted != nil {
 		updates["sec_encrypted"] = *req.SecEncrypted
 	}
+	// 维度外键处理（P1）：挂接/解除/快照写回；失败即终止（维度引用必须
+	// 合法，宁可不改也不留悬空外键）
+	if !applyAssetDimensionUpdates(c, &asset, &req, updates) {
+		return
+	}
 
 	if len(updates) == 0 {
 		Success(c, asset)
@@ -419,7 +485,12 @@ func (h *AssetHandler) Update(c *gin.Context) {
 		Fail(c, http.StatusInternalServerError, 50001, "failed to reload asset")
 		return
 	}
-	Success(c, asset)
+	// 维度富化：编辑响应与列表/详情同口径（切片元素是值拷贝，回取再响应）
+	enriched := []model.Asset{asset}
+	if err := enrichAssetsDimensions(c.Request.Context(), enriched); err != nil {
+		c.Error(err)
+	}
+	Success(c, enriched[0])
 }
 
 // Delete 软删除资产：解绑关联终端（该终端下次上报会重新生成待编资产），

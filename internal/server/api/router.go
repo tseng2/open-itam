@@ -39,6 +39,7 @@ func SetupRouter(offlineThreshold time.Duration) *gin.Engine {
 			v1.RegisterStocktakeRoutes(protected)
 			v1.RegisterAssetRequestRoutes(protected)
 			v1.RegisterDepreciationRoutes(protected)
+			v1.RegisterDimensionRoutes(protected)
 		}
 	}
 
