@@ -412,8 +412,8 @@ sequenceDiagram
 |------|------|------|
 | POST | `/api/v1/auth/login` | 登录签发 JWT |
 | GET/POST/GET:id | `/api/v1/companies` | 公司列表/新增/详情 |
-| GET/POST | `/api/v1/assets` | 资产列表（company_id/status/asset_tag 筛选+分页）/ 建账登记 |
-| GET/PUT | `/api/v1/assets/{id}` | 台账明细 / 台账字段维护（含账面规格） |
+| GET/POST | `/api/v1/assets` | 资产列表（company_id/status/asset_tag/off_book + 维度外键 manufacturer_id/model_id/supplier_id/location_id 筛选+分页）/ 建账登记（支持四个维度外键挂接） |
+| GET/PUT | `/api/v1/assets/{id}` | 台账明细 / 台账字段维护（含账面规格与维度外键：>0 挂接、0 解除挂接） |
 | GET | `/api/v1/assets/{id}/events` | 资产履历时轴 |
 | GET | `/api/v1/assets/{id}/versions` | 硬件基线版本列表 |
 | POST | `/api/v1/assets/{id}/events/{eid}/approve` | 硬件变更审核（更新基线） |
@@ -459,6 +459,10 @@ sequenceDiagram
 | POST | `/api/v1/depreciations/recalculate` | 手动重算净值（仅 admin；返回本轮更新资产数，无需等定时任务） |
 | POST | `/api/v1/assets/{id}/off-book` | 财务销账转列管（仅 admin；重复销账 409、已报废 400；联动 `off_book` AssetEvent 留痕） |
 | POST | `/api/v1/assets/{id}/restore-book` | 恢复在册（仅 admin；未销账 409；联动 `off_book_restore` AssetEvent） |
+| GET/POST/PUT/DELETE | `/api/v1/manufacturers` | 厂商维度库（P1）：列表登录可读（keyword+分页，资产表单下拉依赖）/ 新建/更新/删除仅 admin；名称同公司唯一 409；**被资产或型号引用时删除 409 带引用数** |
+| GET/POST/PUT/DELETE | `/api/v1/suppliers` | 供应商维度库（P1）：同上（联系人/电话字段；被资产引用时删除 409） |
+| GET/POST/PUT/DELETE | `/api/v1/locations` | 位置维度库（P1）：同上（ParentID 树形，父级须同公司、禁自引/成环 400；被资产引用或有子位置时删除 409） |
+| GET/POST/PUT/DELETE | `/api/v1/asset-models` | 型号库（P1）：列表另支持 category_id 过滤；类别/厂商/折旧规则外键校验（跨公司 404）；被资产引用时删除 409 |
 
 **免登录公开面（阶段五 P0-β 移动扫码，无 JWT）：**
 
@@ -485,6 +489,8 @@ sequenceDiagram
 **折旧规则引擎契约（阶段五 P0-β，CIYO 对标）**：`depreciations` 表（`company_id` / `name` / `months` 总折旧月数 / `floor_type`（`amount` 固定金额｜`percent` 残值率）/ `floor_val` / `stages` 阶梯 JSON / `enabled` / `remark`）；资产经 `assets.depreciation_id` 挂接（NULL = 不参与自动折旧，净值人工维护）。**阶梯语义**：`stages` 为 `[{period, unit(MONTH/YEAR), ratio}]` 数组，按购置时长顺序分段消费——前一段走完才进入下一段，段内按整月线性折算，ratio 为该段累计折旧比例（各段之和 ≤ 1）；配置阶梯时 months 必须等于阶梯覆盖月数（入口校验）；**stages 为空则按 months 直线折旧**。净值 = 原值 ×（1 - 折旧比例），再套残值下限（amount 绝对额 / percent 原值×残值率），四舍五入到分；amount 残值误配大于原值时以原值封顶。计算核心收口在 `internal/server/depreciation` 纯函数包（引擎扫描与 API 校验共用，禁止在模型外复制口径）。**引擎**：goroutine + Ticker（默认每小时）扫全部启用规则 → 加载挂接资产 → 差异 ≥1 分才写库（幂等空转不写）；**停用规则/悬空引用/跨公司引用/缺购入日期/原值非正一律冻结现值不动**；手动重算端点与引擎共用 ScanOnce。**列管资产（财务维度，与运营状态正交）**：`assets.off_book` + `off_book_at`——折旧完且财务销账的资产转"列管"继续跟踪使用，走完报废流程变卖才离场；**严禁把列管塞进 Asset.Status 状态机**（盘点圈定/审批流都依赖现有状态语义），展示层以派生标签渲染（off_book && 未报废）+ 列表 off_book 筛选；销账/恢复动作联动 `off_book` / `off_book_restore` AssetEvent（含发生时净值快照），重复销账/未销账恢复均 409，已报废资产不可销账（400）。模型层注意：`enabled` 列不能加 GORM `default:true` 标签——bool 零值 false（停用）是合法值，带 default 标签时 Create 会把零值替换成列默认值，停用规则永远建不出来。
 
 **台账 Excel 批量导入导出契约（P1 首项）**：xlsx 读写收口在 `internal/server/assetexcel` 纯函数包（excelize v2，纯 Go 零 CGO；行级校验/表头映射/模板生成，gin API 只做装配与落库）。**导入**：multipart 上传（`file` + `company_id` 必填 + `depreciation_id` 可选）；**按表头名定位列**（列序无关、未知表头忽略——导出文件含领用人/公司富化列可直接回传再导入）；解析用 RawCellValue 读原始单元格值（真日期单元格是 Excel 序列号：文本布局优先、序列号兜底并限 1982–2100 区间防把金额误判为日期；货币千分位自动清理）；类别必填，映射收口 `model.AssetCategoryIDByName`（中文名/常见别名精确匹配，落库规范名）；状态中文/数字段位都收、空值默认库存中。**行级校验全量拒收**（HTTP 400 + `code 40006` + `data.errors` 行级明细）：空编码、文件内重复、无法识别的类别/状态/日期/金额，以及 **DB 已占用编码——asset_tag 为全局唯一索引且软删除记录仍占位，查重必须 Unscoped**（含回收站，返回"已存在"）。**净值优先级：Excel 账面净值 > 折旧规则即时计算 > 0**；挂接 depreciation_id 后折旧引擎每小时兜底重刷（导入即闭环）；落库为单事务批量建账 + 每资产一条 `create` AssetEvent（OperatorID 取 JWT 操作人），并发撞码由 DB 唯一索引兜底整体回滚。**上限**：导入 2000 行 / 5MB，导出 5000 行（超限提示缩小范围分批）。**导出**：与列表页共用 `applyAssetListFilter` 过滤口径（所见即所得）；日期写 `yyyy-MM-dd` 文本、类别取规范名、加密软件写 是/否（与导入解析同一映射，回导闭环成立）。**模板**：表头 + 示例行（备注提示删除）+ 类别/状态下拉 data validation。路由挂载：三个端点挂 `/api/v1/assets` 已有前缀（同前缀静态段与 `/{id}` 参数段共存 gin 允许），**无需新增挂载表条目**。
+
+**维度治理契约（P1，CIYO 对标）**：四张维表 `manufacturers`（厂商）/ `suppliers`（供应商：contact_name / phone）/ `locations`（位置库：parent_id 树形，NULL=顶级）/ `asset_models`（型号库：category_id 复用 AssetCategory 段位且 0=不限、manufacturer_id / depreciation_id 可空外键、eol_months 0=不限）——全部公司维度实体，**名称同公司唯一（store 层校验，软删除记录不占名可重建；禁用 DB 唯一索引——asset_tag 软删占位同坑）**，名称 trim 后落库。**台账外键化**：`assets` 增 `manufacturer_id` / `model_id` / `supplier_id` / `location_id` 四个可空外键；原 `brand` / `model_name` / `location` 自由文本列**保留作落库快照**（Excel 导入导出、标签 PDF、履历零回归），挂接外键时服务端把维度名写回快照列。**展示口径单源**：`enrichAssetsDimensions` 批量 IN 富化（防 N+1），列表 / 详情 / Excel 导出三处共用——外键存在时以维表名覆盖响应展示（**维度重命名可传播**），供应商回填 `supplier_name` 富化字段（`gorm:"-"`）；富化只改响应不改库。**挂接语义**：建账传 null/0 = 不挂接，编辑传 0 = 解除挂接（快照文本保留）；外键校验存在 + 同公司（404），型号类别与资产类别不匹配 400（按"本次生效类别"校验，类别可同请求变更）；**建账未显式选厂商时随型号带出；未显式挂折旧规则时继承型号库预挂规则**（编辑不自动改）。**删除引用拦截在 API 层**（需查 assets 表，SQLiteStore 测试库无该表）：厂商被资产/型号引用 409、供应商/型号被资产引用 409、位置被资产引用或有子位置 409，均带引用数；位置父级校验：同公司（404）、禁自引与成环（400，沿父链上溯 ≤100 步）。**Excel 导入不设维度外键**（自由文本建账，导入后按需在台账逐笔挂接治理），导出则经富化呈现治理后口径（回导闭环仍成立——富化值与快照一致性由挂接写回保证）。路由挂载表已补四个前缀。
 
 **路由挂载约定（易踩坑）**：服务端是双层路由——外层 `net/http` ServeMux 负责 Agent 通道，并按**硬编码前缀**把管理 API 转给内层 gin 引擎（`internal/server/api/server.go` 的 `NewHandler`）。新增一类 gin 资源路由时，除了在 `api/router.go` 注册，还必须在该前缀挂载表中补一行 `/api/v1/<resource>`，否则外层 mux 会直接返回 404，且构建、单测都不会报错，只能部署后才会暴露。
 
