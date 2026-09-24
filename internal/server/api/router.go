@@ -32,6 +32,7 @@ func SetupRouter() *gin.Engine {
 			v1.RegisterPartRecordRoutes(protected)
 			v1.RegisterUserRoutes(protected)
 			v1.RegisterProtectionRoutes(protected)
+			v1.RegisterDispatchRoutes(protected)
 		}
 	}
 

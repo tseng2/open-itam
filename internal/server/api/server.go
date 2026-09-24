@@ -68,6 +68,9 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 防护模块与卸载验证码管理（JWT + RoleMiddleware，高危安全面）
 	h.mux.Handle("/api/v1/protection", ginEngine)
 	h.mux.Handle("/api/v1/protection/", ginEngine)
+	// 外派登记（阶段五 A1，JWT + RoleMiddleware("admin")）
+	h.mux.Handle("/api/v1/dispatches", ginEngine)
+	h.mux.Handle("/api/v1/dispatches/", ginEngine)
 
 	return h
 }
