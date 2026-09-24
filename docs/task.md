@@ -35,7 +35,7 @@
 
 ## 阶段五：ITAM 业务闭环（当前优先，2026-09-24 起）
 
-### P0-α 差异化线：长期出差终端管理（推荐顺序 A1 → A2 → A3 → A4）
+### P0-α 差异化线：长期出差终端管理（推荐顺序 A1 → A2 → A3 → A4，✅ 已全部完成 2026-09-24）
 - [x] **A1 外派登记**（2026-09-24 完成：store 测试 9 项 + API 集成测试 3 项全绿）
   - [x] 模型：`asset_dispatches`（company_id / asset_id / 负责人 / 目的地 / 外派日期 / 预计归期 / 隔离级别 / 预期格式化标记 / 状态），TDD 先行（store 测试）
   - [x] Store 接口 + GormStore + SQLiteStore 双实现
@@ -49,9 +49,10 @@
   - [x] ingest 时比对 AssetVersion 最新基线快照（内存/内置磁盘数量/磁盘序列号/CPU 数量与型号）
   - [x] 变更 → 自动生成 `hardware_change` AssetEvent（ReviewStatus=20 待审核）+ 详情页标红（复用既有警告框与待审核标签）
   - [x] 幂等：待审核事件存在期间不重复生成（审核通过更新基线后才会再次检测）；U 盘插拔不再误报（Removable 过滤）
-- [ ] **A4 超期/失联 Webhook 告警**
-  - [ ] Webhook 配置存储 + 定时扫描（超期未归/疑似失联）
-  - [ ] 仅 WebHook 单通道推送
+- [x] **A4 超期/失联 Webhook 告警**（2026-09-24 完成：webhook 包 14 项测试覆盖 90.4% + store 3 项 + gin API 6 项 + presence 批量 1 项全绿）
+  - [x] Webhook 配置存储（DB 单例 `webhook_alert_config` + Web UI Settings tab：URL/secret/开关/冷却窗口/手动测试）+ 定时扫描（goroutine+Ticker 每分钟，复用 ResolveAssetPresence 与 offline_threshold_sec）
+  - [x] 仅 WebHook 单通道推送（POST JSON 批量合并，secret 非空带 X-ITAM-Signature HMAC-SHA256 签名头，出站 10s 超时）
+  - [x] 冷却去重：`webhook_alert_states` 按 (company, asset, type) 唯一键，窗口内不重复推送，期满未处理再提醒，失败自动重试
 
 ### P0-β 复刻线：CIYO 对标三件套（A 线完成后接续）
 - [ ] **盘点任务**：`stocktakes`/`stocktake_items` 状态机 + 标签 PDF + 免登录移动扫码页 + 明细核对

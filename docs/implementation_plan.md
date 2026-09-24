@@ -85,11 +85,11 @@
 
 > 对标 CIYO-itasset（46 表字段级结论已沉淀）补齐业务闭环，叠加自研差异化能力。双线并行，推荐顺序：A1 → A2 → A3 → A4 → 盘点任务 → 审批流 → 折旧。
 
-- [ ] **P0-α 差异化线：长期出差终端管理**（立项目第一性痛点；全部复用现有 AssetVersion / AssetEvent / StorageLending / spool 地基，工程量最小）
+- [x] **P0-α 差异化线：长期出差终端管理**（立项目第一性痛点；全部复用现有 AssetVersion / AssetEvent / StorageLending / spool 地基，工程量最小）（2026-09-24 全部完成）
   - [x] A1 外派登记：新表 `asset_dispatches`（预计归期/隔离级别/预期格式化标记）+ API + UI。（2026-09-24 完成）
   - [x] A2 失联语义分层：外派离线(预期内) / 超期未归(高危) / 疑似失联 / 漫游中（展示规则，零表结构变更）。（2026-09-24 完成）
   - [x] A3 硬件 Diff 自动比对：ingest 比对 AssetVersion 基线 → 自动 hardware_change 事件（待审核）+ 标红。（2026-09-24 完成）
-  - [ ] A4 超期/失联 Webhook 告警（消息中心首场景切片）。
+  - [x] A4 超期/失联 Webhook 告警（消息中心首场景切片）。（2026-09-24 完成：DB 配置 + Ticker 定时扫描 + HMAC-SHA256 签名 + 冷却去重，仅 WebHook 单通道）
 - [ ] **P0-β 复刻线：CIYO 对标三件套**
   - [ ] 盘点任务：`stocktakes`/`stocktake_items` 状态机 + 标签 PDF + 免登录移动扫码页。
   - [ ] 设备申请审批流：审批即绑定领用人（单事务）。

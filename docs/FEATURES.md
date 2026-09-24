@@ -62,11 +62,11 @@
 > 2026-09-24 起路线：对标 CIYO-itasset 补齐业务闭环（复刻线），叠加自研差异化能力（差异化线）。
 > 对标结论：CIYO 46 表字段级功能地图、状态机语义、8 个核心机制（折旧阶梯/扫码盘点/审批+调拨同事务等）已沉淀为开发输入；本项目保持多租户/Agent 采集/强类型外键等既有优势。
 
-- [ ] **P0-α 差异化线：长期出差终端管理（最优先，全部复用现有地基）**
+- [x] **P0-α 差异化线：长期出差终端管理（最优先，全部复用现有地基）**（2026-09-24 全部完成）
   - [x] A1 外派登记：新表 `asset_dispatches`（预计归期/隔离级别/预期格式化标记）+ API + UI，事件联动 AssetEvent。（2026-09-24 完成）
   - [x] A2 失联语义分层：外派离线(预期内) / 超期未归(高危) / 疑似失联 / 漫游中 / 在线——纯展示规则，依据外派登记 × LastSeenAt，零表结构变更。（2026-09-24 完成）
   - [x] A3 硬件 Diff 自动比对：ingest 时比对 AssetVersion 基线 → 自动生成 hardware_change 事件（ReviewStatus=待审核）+ 详情页标红。（2026-09-24 完成：新增磁盘序列号/CPU 比对，修复 U 盘插拔误报）
-  - [ ] A4 超期/失联 Webhook 告警：仅 WebHook 单通道（消息中心的首场景切片）。
+  - [x] A4 超期/失联 Webhook 告警：仅 WebHook 单通道（消息中心的首场景切片）。（2026-09-24 完成：DB 配置 + Ticker 扫描 + HMAC 签名 + 冷却去重，webhook 包覆盖 90.4%）
 - [ ] **P0-β 复刻线：CIYO 对标三件套**
   - [ ] 盘点任务：`stocktakes` / `stocktake_items` 状态机（draft→processing→finished；明细 pending→normal/lost/damaged/scrapped）+ 标签 PDF + 免登录移动扫码页（吃 A3 硬件 Diff 协同红利）。
   - [ ] 设备申请审批流：pending→approved/rejected/canceled，审批即绑定领用人（单事务，无中间态悬挂）。
