@@ -38,6 +38,10 @@
             <el-icon><Monitor /></el-icon>
             <span>硬件固定资产</span>
           </el-menu-item>
+          <el-menu-item index="/dispatches">
+            <el-icon><Suitcase /></el-icon>
+            <span>外派出差终端</span>
+          </el-menu-item>
           <el-menu-item index="/software">
             <el-icon><Tickets /></el-icon>
             <span>软件与授权许可</span>
@@ -132,6 +136,7 @@ const currentRouteTitle = computed(() => {
   const map = {
     '/dashboard': '总览大盘',
     '/assets': '硬件固定资产台账',
+    '/dispatches': '外派出差终端管理',
     '/devices': '终端设备画像',
     '/changes': '硬件变更与预警中心',
     '/organization': '组织架构与人员',

@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import Dashboard from './views/Dashboard.vue'
 import Assets from './views/Assets.vue'
+import Dispatches from './views/Dispatches.vue'
 import Devices from './views/Devices.vue'
 import DeviceDetail from './views/DeviceDetail.vue'
 import Changes from './views/Changes.vue'
@@ -18,6 +19,7 @@ const router = createRouter({
     { path: '/login', component: Login },
     { path: '/dashboard', component: Dashboard },
     { path: '/assets', component: Assets },
+    { path: '/dispatches', component: Dispatches },
     { path: '/devices', component: Devices },
     { path: '/devices/:id', component: DeviceDetail },
     { path: '/changes', component: Changes },

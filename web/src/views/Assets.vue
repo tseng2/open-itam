@@ -177,6 +177,40 @@
           </template>
         </el-alert>
 
+        <!-- 外派状态卡片：有进行中的外派时展示，超期高亮（阶段五 A1） -->
+        <el-card v-if="activeDispatch" shadow="never" class="dispatch-card">
+          <template #header>
+            <div class="dispatch-card-header">
+              <span>外派状态</span>
+              <div>
+                <el-tag :type="dispatchOverdue ? 'danger' : 'primary'" size="small">
+                  {{ dispatchOverdue ? '超期未归（高危）' : '外派中' }}
+                </el-tag>
+                <el-button size="small" type="primary" style="margin-left: 8px" @click="returnDispatch">归还登记</el-button>
+                <el-button size="small" type="danger" plain @click="cancelDispatch">作废</el-button>
+              </div>
+            </div>
+          </template>
+          <el-descriptions :column="3" border size="small">
+            <el-descriptions-item label="外派负责人">{{ activeDispatch.borrower_name }}</el-descriptions-item>
+            <el-descriptions-item label="目的地">{{ activeDispatch.destination }}</el-descriptions-item>
+            <el-descriptions-item label="预计归期">
+              <span :class="{ 'overdue-text': dispatchOverdue }">{{ formatDate(activeDispatch.expected_return_at) || '-' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="外派日期">{{ formatDate(activeDispatch.dispatched_at) || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="保密隔离（不可联网）">
+              <el-tag :type="activeDispatch.isolation_offline ? 'warning' : 'info'" size="small">
+                {{ activeDispatch.isolation_offline ? '是（离线属预期内）' : '否' }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="预期格式化归还">
+              <el-tag :type="activeDispatch.expect_wipe ? 'danger' : 'info'" size="small">
+                {{ activeDispatch.expect_wipe ? '是' : '否' }}
+              </el-tag>
+            </el-descriptions-item>
+          </el-descriptions>
+        </el-card>
+
         <el-descriptions title="基础实物档案" :column="2" border style="margin-bottom: 20px">
           <el-descriptions-item label="固定资产编码">
             <strong style="color: #2563eb">{{ currentAsset.asset_tag }}</strong>
@@ -733,6 +767,7 @@ const currentAsset = ref(null)
 const deviceDetail = ref(null)
 const assetEvents = ref([])
 const assetRepairs = ref([])
+const activeDispatch = ref(null)
 const activeTab = ref('hardware')
 const softSearch = ref('')
 
@@ -748,6 +783,12 @@ const mergeCandidates = ref([])
 
 const pendingReviewEvent = computed(() => {
   return assetEvents.value.find(e => e.review_status === 20 && e.event_type === 'hardware_change')
+})
+
+// 外派状态卡的"超期未归"为计算属性：外派中且已过预计归期（不落独立状态位）
+const dispatchOverdue = computed(() => {
+  const d = activeDispatch.value
+  return !!d && d.status === 10 && new Date(d.expected_return_at).getTime() < Date.now()
 })
 
 // 组装机无真实出厂 SN 时，服务端以终端指纹（device_id）暂代，页面上给出区分提示
@@ -921,12 +962,14 @@ async function openAssetDetail(row) {
   drawerVisible.value = true
   drawerLoading.value = true
   try {
-    const [eventsRes, repairsRes] = await Promise.all([
+    const [eventsRes, repairsRes, dispatchRes] = await Promise.all([
       api(`/api/v1/assets/${row.id}/events`).catch(() => ({ data: [] })),
-      api(`/api/v1/assets/${row.id}/repairs`).catch(() => ({ data: [] }))
+      api(`/api/v1/assets/${row.id}/repairs`).catch(() => ({ data: [] })),
+      api(`/api/v1/dispatches?company_id=${row.company_id}&asset_id=${row.id}&status=10`).catch(() => ({ data: { items: [] } }))
     ])
     assetEvents.value = eventsRes.data || []
     assetRepairs.value = repairsRes.data || []
+    activeDispatch.value = (dispatchRes.data?.items || [])[0] || null
 
     const deviceId = row.device?.device_id || ''
     if (deviceId) {
@@ -1176,6 +1219,55 @@ async function confirmDelete() {
   }
 }
 
+// 外派状态卡动作：归还/作废后重载抽屉，履历时间轴同步出现 dispatch 事件
+async function returnDispatch() {
+  const d = activeDispatch.value
+  if (!d) return
+  try {
+    await ElMessageBox.confirm(
+      '确认该终端已归还？归还时间记为现在，并写入资产履历。',
+      '外派归还确认',
+      { type: 'warning', confirmButtonText: '确认归还', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api(`/api/v1/dispatches/${d.id}/return`, {
+      method: 'POST',
+      body: JSON.stringify({ company_id: d.company_id }),
+    })
+    ElMessage.success('已登记归还')
+    if (currentAsset.value) await openAssetDetail(currentAsset.value)
+  } catch (err) {
+    ElMessage.error(err.message || '归还失败')
+  }
+}
+
+async function cancelDispatch() {
+  const d = activeDispatch.value
+  if (!d) return
+  try {
+    await ElMessageBox.confirm(
+      '作废该外派登记？仅用于误登记修正，不影响资产其他状态，也不写履历。',
+      '外派作废确认',
+      { type: 'warning', confirmButtonText: '确认作废', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api(`/api/v1/dispatches/${d.id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ company_id: d.company_id }),
+    })
+    ElMessage.success('已作废该外派记录')
+    if (currentAsset.value) await openAssetDetail(currentAsset.value)
+  } catch (err) {
+    ElMessage.error(err.message || '作废失败')
+  }
+}
+
 async function fetchCompanies() {
   try {
     const res = await api('/api/v1/companies')
@@ -1303,6 +1395,19 @@ onMounted(() => {
 }
 .empty-cell {
   color: #d1d5db;
+}
+.dispatch-card {
+  margin-bottom: 20px;
+  border-radius: 8px;
+}
+.dispatch-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.overdue-text {
+  color: #dc2626;
+  font-weight: 600;
 }
 .pagination-area {
   display: flex;
