@@ -55,6 +55,10 @@
             <el-icon><Checked /></el-icon>
             <span>设备申请审批</span>
           </el-menu-item>
+          <el-menu-item index="/depreciations">
+            <el-icon><Coin /></el-icon>
+            <span>折旧规则引擎</span>
+          </el-menu-item>
           <el-menu-item index="/software">
             <el-icon><Tickets /></el-icon>
             <span>软件与授权许可</span>
@@ -153,6 +157,7 @@ const currentRouteTitle = computed(() => {
     '/dispatches': '外派出差终端管理',
     '/stocktakes': '盘点任务管理',
     '/asset-requests': '设备申请审批',
+    '/depreciations': '折旧规则引擎',
     '/devices': '终端设备画像',
     '/changes': '硬件变更与预警中心',
     '/organization': '组织架构与人员',

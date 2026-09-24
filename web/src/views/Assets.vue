@@ -54,6 +54,13 @@
           </el-select>
         </el-form-item>
 
+        <el-form-item label="财务维度">
+          <el-select v-model="query.off_book" placeholder="全部" clearable style="width: 170px">
+            <el-option label="列管资产（已销账）" :value="true" />
+            <el-option label="在册资产" :value="false" />
+          </el-select>
+        </el-form-item>
+
         <el-form-item>
           <el-button type="primary" @click="fetchAssets">查询</el-button>
           <el-button @click="resetQuery">重置</el-button>
@@ -76,6 +83,13 @@
             <el-tag v-if="row.asset_tag && row.asset_tag.startsWith('待编')" type="warning" size="small" style="margin-left: 6px">
               待人工编码
             </el-tag>
+            <el-tooltip
+              v-if="row.off_book && row.status !== 40"
+              content="折旧完且已销财务账的列管资产，继续跟踪使用直至报废变卖"
+              placement="top"
+            >
+              <el-tag type="warning" effect="plain" size="small" style="margin-left: 6px">列管</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column prop="company.name" label="归属公司" min-width="130">
@@ -167,6 +181,19 @@
           </el-button>
           <el-button type="warning" plain size="small" @click="openMergeDialog">合并资产</el-button>
           <el-button type="danger" plain size="small" @click="confirmDelete">删除</el-button>
+          <el-button
+            v-if="isDrawerAdmin && !currentAsset.off_book && currentAsset.status !== 40"
+            type="warning"
+            size="small"
+            @click="confirmOffBook"
+          >销账转列管</el-button>
+          <el-button
+            v-if="isDrawerAdmin && currentAsset.off_book"
+            type="success"
+            plain
+            size="small"
+            @click="confirmRestoreBook"
+          >恢复在册</el-button>
         </div>
 
         <el-alert
@@ -305,6 +332,15 @@
           </el-descriptions-item>
           <el-descriptions-item label="净值">
             {{ currentAsset.net_value ? '￥' + currentAsset.net_value.toFixed(2) : '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="折旧规则">
+            {{ depreciationRuleName(currentAsset.depreciation_id) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="财务维度">
+            <el-tag v-if="currentAsset.off_book" type="warning" size="small">
+              列管（已销账{{ formatDate(currentAsset.off_book_at) ? ' ' + formatDate(currentAsset.off_book_at) : '' }}）
+            </el-tag>
+            <el-tag v-else type="info" size="small">在册</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="加密软件管理">
             <el-tag :type="currentAsset.sec_encrypted ? 'success' : 'info'" size="small">
@@ -618,6 +654,24 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
+            <el-form-item label="折旧规则">
+              <el-select
+                v-model="form.depreciation_id"
+                clearable
+                placeholder="不参与自动折旧"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="r in depreciationRules"
+                  :key="r.id"
+                  :label="`${r.name}（共${r.months}个月）`"
+                  :value="r.id"
+                />
+              </el-select>
+              <div class="form-tip">挂接后折旧引擎按购入时间自动刷净值，人工改净值会被下一轮覆盖</div>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
             <el-form-item label="加密软件管理">
               <el-switch v-model="form.sec_encrypted" active-text="已纳管（绿盾）" inactive-text="否" />
             </el-form-item>
@@ -782,7 +836,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { Monitor, Plus, Document, Money, Edit } from '@element-plus/icons-vue'
 import { api } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -858,6 +912,7 @@ const query = reactive({
   asset_tag: '',
   keyword: '',
   status: '',
+  off_book: '',
   page: 1,
   page_size: 20,
 })
@@ -889,6 +944,7 @@ const form = reactive({
   u8_order_no: '',
   original_price: 0,
   net_value: 0,
+  depreciation_id: '',
   sec_encrypted: false,
   remark: '',
 })
@@ -1026,6 +1082,8 @@ async function openAssetDetail(row) {
   currentAsset.value = row
   drawerVisible.value = true
   drawerLoading.value = true
+  // 折旧规则名映射（详情抽屉展示）
+  fetchDepreciationRules(row.company_id)
   try {
     const [eventsRes, repairsRes, dispatchRes, requestsRes] = await Promise.all([
       api(`/api/v1/assets/${row.id}/events`).catch(() => ({ data: [] })),
@@ -1084,6 +1142,7 @@ function resetForm() {
     u8_order_no: '',
     original_price: 0,
     net_value: 0,
+    depreciation_id: '',
     sec_encrypted: false,
     remark: '',
   })
@@ -1127,6 +1186,7 @@ function openEditDialog() {
     u8_order_no: a.u8_order_no || '',
     original_price: a.original_price || 0,
     net_value: a.net_value || 0,
+    depreciation_id: a.depreciation_id || '',
     sec_encrypted: !!a.sec_encrypted,
     remark: a.remark || '',
   })
@@ -1406,6 +1466,58 @@ async function refreshCurrentAsset() {
   } catch { /* ignore */ }
 }
 
+// 财务销账转列管（P0-β）：折旧完且销账的资产继续跟踪使用，报废变卖才离场；
+// 动作写入资产履历，运营状态机不动
+async function confirmOffBook() {
+  const a = currentAsset.value
+  if (!a) return
+  try {
+    await ElMessageBox.confirm(
+      `确认 ${a.asset_tag} 已折旧完并销财务账？销账后资产转「列管」继续跟踪使用，直至走完报废流程变卖。`,
+      '财务销账确认',
+      { type: 'warning', confirmButtonText: '确认销账转列管', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api(`/api/v1/assets/${a.id}/off-book`, {
+      method: 'POST',
+      body: JSON.stringify({ company_id: a.company_id }),
+    })
+    ElMessage.success('已销账转列管，履历已留痕')
+    await refreshCurrentAsset()
+    fetchAssets()
+  } catch (err) {
+    ElMessage.error(err.message || '销账失败')
+  }
+}
+
+async function confirmRestoreBook() {
+  const a = currentAsset.value
+  if (!a) return
+  try {
+    await ElMessageBox.confirm(
+      `撤销 ${a.asset_tag} 的财务销账，恢复在册管理？履历将记录本次恢复。`,
+      '恢复在册确认',
+      { type: 'warning', confirmButtonText: '确认恢复', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api(`/api/v1/assets/${a.id}/restore-book`, {
+      method: 'POST',
+      body: JSON.stringify({ company_id: a.company_id }),
+    })
+    ElMessage.success('已恢复在册')
+    await refreshCurrentAsset()
+    fetchAssets()
+  } catch (err) {
+    ElMessage.error(err.message || '恢复在册失败')
+  }
+}
+
 async function fetchCompanies() {
   try {
     const res = await api('/api/v1/companies')
@@ -1415,6 +1527,36 @@ async function fetchCompanies() {
   }
 }
 
+// 折旧规则下拉（P0-β）：按公司缓存，资产表单与详情抽屉共用；
+// 服务端按公司边界返回，普通用户也可读（表单依赖）
+const depreciationRules = ref([])
+let depreciationRulesCompanyID = 0
+
+async function fetchDepreciationRules(companyID) {
+  if (!companyID) {
+    depreciationRules.value = []
+    depreciationRulesCompanyID = 0
+    return
+  }
+  if (depreciationRulesCompanyID === companyID) return
+  try {
+    const res = await api(`/api/v1/depreciations?company_id=${companyID}&page_size=100`)
+    depreciationRules.value = res.data?.items || []
+    depreciationRulesCompanyID = companyID
+  } catch (err) {
+    console.error('failed to fetch depreciation rules', err)
+  }
+}
+
+function depreciationRuleName(ruleID) {
+  if (!ruleID) return '未挂接（净值手工维护）'
+  const r = depreciationRules.value.find(item => item.id === ruleID)
+  return r ? `${r.name}（共${r.months}个月）` : `规则 #${ruleID}`
+}
+
+// 表单公司切换即换规则下拉（规则是公司维度实体）
+watch(() => form.company_id, (id) => fetchDepreciationRules(id))
+
 async function fetchAssets() {
   loading.value = true
   try {
@@ -1423,6 +1565,7 @@ async function fetchAssets() {
     if (query.asset_tag) params.append('asset_tag', query.asset_tag)
     if (query.keyword) params.append('keyword', query.keyword)
     if (query.status) params.append('status', query.status)
+    if (query.off_book !== '' && query.off_book !== null) params.append('off_book', query.off_book)
     params.append('page', query.page)
     params.append('page_size', query.page_size)
 
@@ -1441,6 +1584,7 @@ function resetQuery() {
   query.asset_tag = ''
   query.keyword = ''
   query.status = ''
+  query.off_book = ''
   query.page = 1
   fetchAssets()
 }
@@ -1457,6 +1601,8 @@ async function submitCreate() {
         ...form,
         purchase_date: form.purchase_date || null,
         category_name: categoryNames[form.category_id] || '',
+        // 建账空值 → null（不挂接）；编辑空值 → 0（解除挂接），后端按语义区分
+        depreciation_id: editMode.value ? (form.depreciation_id || 0) : (form.depreciation_id || null),
       }
       if (editMode.value) {
         await api(`/api/v1/assets/${form.id}`, {
@@ -1527,6 +1673,12 @@ onMounted(() => {
 .sub-text {
   font-size: 12px;
   color: #9ca3af;
+}
+.form-tip {
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.4;
+  margin-top: 2px;
 }
 .mono {
   font-family: monospace;
