@@ -41,6 +41,16 @@ type Handler struct {
 // defaultOfflineThreshold A2 失联判定的默认离线阈值：15 分钟容忍一次心跳丢失
 const defaultOfflineThreshold = 15 * time.Minute
 
+// ResolveOfflineThreshold 把 server.json 的 offline_threshold_sec 归一为时长：
+// 0/负值取默认 15 分钟。main（A4 Webhook 引擎注入）与 NewHandler 共用，
+// 默认值只此一处，禁止各自硬编码
+func ResolveOfflineThreshold(sec int) time.Duration {
+	if sec <= 0 {
+		return defaultOfflineThreshold
+	}
+	return time.Duration(sec) * time.Second
+}
+
 func NewHandler(s store.Store, cfg Config) *Handler {
 	h := &Handler{store: s, cfg: cfg, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /api/v1/register", h.handleRegister)
@@ -58,11 +68,7 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 挂载全新 ITAM 资产管理与集团公司路由
 	// A2 失联语义分层：资产列表联系状态的离线判定阈值，未配置时默认 15 分钟
 	// （容忍一次心跳丢失），源头是 server.json 的 offline_threshold_sec
-	offlineThreshold := time.Duration(cfg.OfflineThresholdSec) * time.Second
-	if offlineThreshold <= 0 {
-		offlineThreshold = defaultOfflineThreshold
-	}
-	ginEngine := SetupRouter(offlineThreshold)
+	ginEngine := SetupRouter(ResolveOfflineThreshold(cfg.OfflineThresholdSec))
 	h.mux.Handle("/api/v1/auth", ginEngine)
 	h.mux.Handle("/api/v1/auth/", ginEngine)
 	h.mux.Handle("/api/v1/assets", ginEngine)
@@ -82,6 +88,10 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 外派登记（阶段五 A1，JWT + RoleMiddleware("admin")）
 	h.mux.Handle("/api/v1/dispatches", ginEngine)
 	h.mux.Handle("/api/v1/dispatches/", ginEngine)
+	// Webhook 告警配置（阶段五 A4，JWT + RoleMiddleware("admin")）
+	// 易踩坑：不补这两行，外层 mux 直接 404 且构建测试全绿（A1 的教训）
+	h.mux.Handle("/api/v1/webhook-alerts", ginEngine)
+	h.mux.Handle("/api/v1/webhook-alerts/", ginEngine)
 
 	return h
 }

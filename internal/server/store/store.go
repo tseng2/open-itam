@@ -87,5 +87,11 @@ type Store interface {
 	ReturnDispatch(ctx context.Context, companyID, id int64, returnedAt time.Time) (model.AssetDispatch, error)
 	CancelDispatch(ctx context.Context, companyID, id int64) (model.AssetDispatch, error)
 	GetActiveDispatchByAsset(ctx context.Context, companyID, assetID int64) (model.AssetDispatch, error)
+	// 超期/失联 Webhook 告警（阶段五 A4）：配置存 DB（单例），冷却状态按
+	// (company_id, asset_id, alert_type) 去重，进程重启不丢
+	GetWebhookAlertConfig(ctx context.Context) (model.WebhookAlertConfig, error)
+	PutWebhookAlertConfig(ctx context.Context, cfg model.WebhookAlertConfig) error
+	ListWebhookAlertStates(ctx context.Context) ([]model.WebhookAlertState, error)
+	PutWebhookAlertState(ctx context.Context, st model.WebhookAlertState) error
 	Close() error
 }

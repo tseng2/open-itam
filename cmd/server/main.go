@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"itagent/internal/server/api"
 	"itagent/internal/server/store"
 	"itagent/internal/server/ui"
+	"itagent/internal/server/webhook"
 )
 
 type serverConfig struct {
@@ -84,6 +86,14 @@ func main() {
 	})
 
 	root := ui.Wrap(h)
+
+	// A4 超期/失联 Webhook 告警：单进程 goroutine + Ticker 定时扫描，
+	// 无需分布式锁；ctx 随进程退出自动取消
+	alertEngine := webhook.NewEngine(db, st, api.ResolveOfflineThreshold(cfg.OfflineThresholdSec))
+	engineCtx, stopEngine := context.WithCancel(context.Background())
+	defer stopEngine()
+	go alertEngine.Run(engineCtx, webhook.DefaultScanInterval)
+
 	log.Printf("itagent server listening on %s, db=%s", cfg.Listen, cfg.DBPath)
 	if err := http.ListenAndServe(cfg.Listen, root); err != nil {
 		log.Fatal(err)

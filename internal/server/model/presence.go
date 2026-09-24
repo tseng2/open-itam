@@ -22,6 +22,26 @@ type PresenceInput struct {
 	ActiveDispatch   *AssetDispatch
 }
 
+// ResolveAssetPresence 批量解析资产联系状态并写回 Presence 字段。
+// 资产列表富化（A2）与 Webhook 告警扫描（A4）共用的唯一实现，
+// 判定核心恒为 ResolvePresence，阈值由调用方注入，禁止各自重复实现。
+// assets 须已 Preload("Device")；无 Agent 终端跳过（Presence 留空不参与判定）
+func ResolveAssetPresence(assets []Asset, dispatchByAsset map[int64]*AssetDispatch, now time.Time, heartbeatTimeout time.Duration) {
+	for i := range assets {
+		a := &assets[i]
+		if a.Device == nil {
+			continue
+		}
+		a.Presence = ResolvePresence(PresenceInput{
+			Now:              now,
+			HeartbeatTimeout: heartbeatTimeout,
+			LastSeenAt:       a.Device.LastSeenAt,
+			PublicIP:         a.Device.PublicIP,
+			ActiveDispatch:   dispatchByAsset[a.ID],
+		})
+	}
+}
+
 // ResolvePresence 计算单台终端的联系状态，判定顺序即优先级：
 //  1. 超期未归(高危)：业务归还已违约，无论是否在线都优先标注（催归优先于存活确认）
 //  2. 离线：IsolationOffline 外派豁免 → 预期内；否则疑似失联——外派未标隔离而离线

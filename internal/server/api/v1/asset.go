@@ -144,7 +144,8 @@ func (h *AssetHandler) List(c *gin.Context) {
 }
 
 // enrichPresence 批量计算资产联系状态（A2 失联语义分层）：
-// 一次 IN 查询取全部进行中外派，避免逐资产 N+1；无 Agent 终端留空不参与判定
+// 一次 IN 查询取全部进行中外派，避免逐资产 N+1；判定核心复用
+// model.ResolveAssetPresence（A4 Webhook 扫描与之共用同一实现）
 func (h *AssetHandler) enrichPresence(ctx context.Context, items []model.Asset) error {
 	assetIDs := make([]int64, 0, len(items))
 	for _, a := range items {
@@ -161,20 +162,7 @@ func (h *AssetHandler) enrichPresence(ctx context.Context, items []model.Asset) 
 		dispatchByAsset[dispatches[i].AssetID] = &dispatches[i]
 	}
 
-	now := time.Now().UTC()
-	for i := range items {
-		a := &items[i]
-		if a.Device == nil {
-			continue
-		}
-		a.Presence = model.ResolvePresence(model.PresenceInput{
-			Now:              now,
-			HeartbeatTimeout: h.offlineThreshold,
-			LastSeenAt:       a.Device.LastSeenAt,
-			PublicIP:         a.Device.PublicIP,
-			ActiveDispatch:   dispatchByAsset[a.ID],
-		})
-	}
+	model.ResolveAssetPresence(items, dispatchByAsset, time.Now().UTC(), h.offlineThreshold)
 	return nil
 }
 

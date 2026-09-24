@@ -99,6 +99,28 @@ CREATE TABLE IF NOT EXISTS asset_dispatches (
 CREATE INDEX IF NOT EXISTS idx_asset_dispatches_company_status ON asset_dispatches(company_id, status);
 CREATE INDEX IF NOT EXISTS idx_asset_dispatches_asset_status ON asset_dispatches(asset_id, status);
 CREATE INDEX IF NOT EXISTS idx_asset_dispatches_return_by ON asset_dispatches(expected_return_at);
+
+CREATE TABLE IF NOT EXISTS webhook_alert_config (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    enabled          INTEGER NOT NULL DEFAULT 0,
+    webhook_url      TEXT NOT NULL DEFAULT '',
+    secret           TEXT NOT NULL DEFAULT '',
+    cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+    updated_at       DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS webhook_alert_states (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    asset_id   INTEGER NOT NULL,
+    alert_type TEXT NOT NULL,
+    sent_at    DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    deleted_at DATETIME
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_alert_state ON webhook_alert_states(company_id, asset_id, alert_type);
 `
 
 type SQLiteStore struct {
@@ -629,4 +651,73 @@ func (s *SQLiteStore) GetActiveDispatchByAsset(ctx context.Context, companyID, a
 		`SELECT `+dispatchColumns+` FROM asset_dispatches
 		 WHERE company_id = ? AND asset_id = ? AND status = ? AND deleted_at IS NULL`,
 		companyID, assetID, model.DispatchStatusActive))
+}
+
+func (s *SQLiteStore) GetWebhookAlertConfig(ctx context.Context) (model.WebhookAlertConfig, error) {
+	var (
+		cfg     model.WebhookAlertConfig
+		enabled int
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, enabled, webhook_url, secret, cooldown_minutes, updated_at
+		 FROM webhook_alert_config WHERE id = 1`).
+		Scan(&cfg.ID, &enabled, &cfg.WebhookURL, &cfg.Secret, &cfg.CooldownMinutes, &cfg.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.WebhookAlertConfig{CooldownMinutes: model.DefaultWebhookCooldownMinutes}, nil
+	}
+	if err != nil {
+		return model.WebhookAlertConfig{}, fmt.Errorf("get webhook alert config: %w", err)
+	}
+	cfg.Enabled = enabled == 1
+	if cfg.CooldownMinutes <= 0 {
+		cfg.CooldownMinutes = model.DefaultWebhookCooldownMinutes
+	}
+	return cfg, nil
+}
+
+func (s *SQLiteStore) PutWebhookAlertConfig(ctx context.Context, cfg model.WebhookAlertConfig) error {
+	cfg.ID = 1
+	cfg.UpdatedAt = time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO webhook_alert_config (id, enabled, webhook_url, secret, cooldown_minutes, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled, webhook_url=excluded.webhook_url,
+		   secret=excluded.secret, cooldown_minutes=excluded.cooldown_minutes, updated_at=excluded.updated_at`,
+		sqliteBool(cfg.Enabled), cfg.WebhookURL, cfg.Secret, cfg.CooldownMinutes, cfg.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("put webhook alert config: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListWebhookAlertStates(ctx context.Context) ([]model.WebhookAlertState, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, company_id, asset_id, alert_type, sent_at FROM webhook_alert_states
+		 WHERE deleted_at IS NULL ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list webhook alert states: %w", err)
+	}
+	defer rows.Close()
+	states := []model.WebhookAlertState{}
+	for rows.Next() {
+		var st model.WebhookAlertState
+		if err := rows.Scan(&st.ID, &st.CompanyID, &st.AssetID, &st.AlertType, &st.SentAt); err != nil {
+			return nil, fmt.Errorf("scan webhook alert state: %w", err)
+		}
+		states = append(states, st)
+	}
+	return states, rows.Err()
+}
+
+func (s *SQLiteStore) PutWebhookAlertState(ctx context.Context, st model.WebhookAlertState) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO webhook_alert_states (company_id, asset_id, alert_type, sent_at, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?)
+		 ON CONFLICT(company_id, asset_id, alert_type) DO UPDATE SET sent_at=excluded.sent_at, updated_at=excluded.updated_at`,
+		st.CompanyID, st.AssetID, st.AlertType, st.SentAt.UTC(), now, now)
+	if err != nil {
+		return fmt.Errorf("put webhook alert state: %w", err)
+	}
+	return nil
 }

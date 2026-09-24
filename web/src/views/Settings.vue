@@ -75,6 +75,42 @@
         />
       </el-tab-pane>
 
+      <el-tab-pane label="Webhook 告警">
+        <el-alert
+          title="超期未归 / 疑似失联资产由服务端每分钟定时扫描并推送；secret 非空时请求携带 X-ITAM-Signature 签名头（HMAC-SHA256，对原始 body 计算，hex 编码），接收端可据此校验来源"
+          type="info"
+          show-icon
+          :closable="false"
+          style="margin-bottom: 20px"
+        />
+        <el-form label-width="140px" style="max-width: 680px">
+          <el-form-item label="告警开关">
+            <el-switch v-model="webhook.enabled" active-text="启用后每分钟扫描一次" />
+          </el-form-item>
+          <el-form-item label="接收端 URL">
+            <el-input v-model="webhook.url" placeholder="https://hooks.example.com/itam" />
+          </el-form-item>
+          <el-form-item label="签名 Secret">
+            <el-input
+              v-model="webhook.secret"
+              type="password"
+              show-password
+              placeholder="可选；留空保持现有 secret"
+              style="max-width: 320px"
+            />
+            <el-tag v-if="webhook.secretSet" type="success" size="small" style="margin-left: 8px">已设置</el-tag>
+          </el-form-item>
+          <el-form-item label="冷却窗口">
+            <el-input-number v-model="webhook.cooldown" :min="1" :max="10080" style="width: 140px" />
+            <span class="cooldown-hint">分钟；同一资产未处理期间不重复推送，期满仍未恢复再次提醒</span>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" :loading="webhook.saving" @click="saveWebhook">保存配置</el-button>
+            <el-button :loading="webhook.testing" @click="testWebhook">发送测试</el-button>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
       <el-tab-pane label="用友 U8 v18 集成">
         <el-form label-width="180px" style="max-width: 680px; margin-top: 16px">
           <el-form-item label="U8 API 网关地址">
@@ -155,6 +191,16 @@ const protection = reactive({
   uninstall: { enabled: false, passwordSet: false, password: '', saving: false },
 })
 
+const webhook = reactive({
+  enabled: false,
+  url: '',
+  secret: '',
+  secretSet: false,
+  cooldown: 60,
+  saving: false,
+  testing: false,
+})
+
 onMounted(async () => {
   try {
     const res = await api('/api/v1/protection/modules')
@@ -165,6 +211,16 @@ onMounted(async () => {
     protection.uninstall.passwordSet = d.uninstall_protection?.password_set || false
   } catch (e) {
     ElMessage.error('加载防护配置失败: ' + e.message)
+  }
+  try {
+    const res = await api('/api/v1/webhook-alerts/config')
+    const d = res.data || {}
+    webhook.enabled = d.enabled || false
+    webhook.url = d.webhook_url || ''
+    webhook.secretSet = d.secret_set || false
+    webhook.cooldown = d.cooldown_minutes || 60
+  } catch (e) {
+    ElMessage.error('加载 Webhook 告警配置失败: ' + e.message)
   }
 })
 
@@ -197,6 +253,42 @@ async function savePassword(key, target) {
     target.saving = false
   }
 }
+
+async function saveWebhook() {
+  if (webhook.enabled && !webhook.url) {
+    ElMessage.warning('启用前请先填写接收端 URL')
+    return
+  }
+  webhook.saving = true
+  try {
+    const body = {
+      enabled: webhook.enabled,
+      webhook_url: webhook.url,
+      cooldown_minutes: webhook.cooldown,
+    }
+    if (webhook.secret) body.secret = webhook.secret
+    const res = await api('/api/v1/webhook-alerts/config', { method: 'PUT', body: JSON.stringify(body) })
+    webhook.secretSet = res.data?.secret_set || webhook.secretSet
+    webhook.secret = ''
+    ElMessage.success('Webhook 告警配置已保存')
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    webhook.saving = false
+  }
+}
+
+async function testWebhook() {
+  webhook.testing = true
+  try {
+    const res = await api('/api/v1/webhook-alerts/test', { method: 'POST', body: JSON.stringify({}) })
+    ElMessage.success(res.data?.message || '测试推送已送达')
+  } catch (e) {
+    ElMessage.error('测试推送失败: ' + e.message)
+  } finally {
+    webhook.testing = false
+  }
+}
 </script>
 
 <style scoped>
@@ -207,4 +299,5 @@ async function savePassword(key, target) {
 .subtitle { font-size: 13px; color: #6b7280; }
 .settings-card { border-radius: 8px; min-height: 480px; }
 .protection-card-header { display: flex; align-items: center; justify-content: space-between; }
+.cooldown-hint { margin-left: 8px; font-size: 13px; color: #6b7280; }
 </style>

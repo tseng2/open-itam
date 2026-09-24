@@ -157,3 +157,24 @@ func TestResolvePresenceOverdueBoundary(t *testing.T) {
 		t.Fatalf("expected_return exactly now must not be overdue, got %q", got)
 	}
 }
+
+func TestResolveAssetPresenceBatch(t *testing.T) {
+	now, threshold := presenceFixture()
+	assets := []Asset{
+		{BaseModel: BaseModel{ID: 1}, Device: &Device{LastSeenAt: now.Add(-5 * time.Minute)}},                  // 在线
+		{BaseModel: BaseModel{ID: 2}, Device: &Device{LastSeenAt: now.Add(-time.Hour)}},                         // 失联
+		{BaseModel: BaseModel{ID: 3}},                                                                          // 无终端：跳过
+		{BaseModel: BaseModel{ID: 4}, Device: &Device{LastSeenAt: now.Add(-5 * time.Minute), PublicIP: "1.2.3.4"}}, // 漫游
+	}
+	dispatchByAsset := map[int64]*AssetDispatch{
+		2: activeDispatch(now.Add(time.Hour), true), // 外派隔离未超期：预期内离线
+	}
+	ResolveAssetPresence(assets, dispatchByAsset, now, threshold)
+
+	expect := map[int64]string{1: PresenceOnline, 2: PresenceDispatchOffline, 3: "", 4: PresenceRoaming}
+	for i, a := range assets {
+		if a.Presence != expect[a.ID] {
+			t.Fatalf("asset %d (idx %d): expected presence %q, got %q", a.ID, i, expect[a.ID], a.Presence)
+		}
+	}
+}
