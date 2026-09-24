@@ -108,6 +108,14 @@ type Store interface {
 	ListStocktakeItems(ctx context.Context, f StocktakeItemListFilter) ([]model.StocktakeItem, int64, error)
 	CheckStocktakeItems(ctx context.Context, companyID, stocktakeID int64, checks []model.StocktakeCheck, scannedBy string) ([]model.StocktakeItem, error)
 	CountStocktakeResults(ctx context.Context, companyID, stocktakeID int64) (map[int]int64, error)
+	// 设备申请（阶段五 P0-β）：提交即指定库存资产。审批通过的
+	// 「状态流转 + 资产绑定 + 领用履历」三步同事务在 API 层完成
+	//（GORM 跨表事务；SQLiteStore 测试库无 assets 表），这里只管申请表本身的原子流转
+	CreateAssetRequest(ctx context.Context, r model.AssetRequest) (model.AssetRequest, error)
+	ListAssetRequests(ctx context.Context, f AssetRequestListFilter) ([]model.AssetRequest, int64, error)
+	GetAssetRequest(ctx context.Context, companyID, id int64) (model.AssetRequest, error)
+	RejectAssetRequest(ctx context.Context, companyID, id int64, approverID int64, remark string, now time.Time) (model.AssetRequest, error)
+	CancelAssetRequest(ctx context.Context, companyID, id int64) (model.AssetRequest, error)
 	Close() error
 }
 
@@ -125,6 +133,16 @@ type StocktakeItemListFilter struct {
 	StocktakeID int64
 	Result      int
 	Keyword     string
+	Page        int
+	PageSize    int
+}
+
+// AssetRequestListFilter 设备申请列表查询条件
+type AssetRequestListFilter struct {
+	CompanyID   int64
+	Status      int
+	ApplicantID int64
+	AssetID     int64
 	Page        int
 	PageSize    int
 }

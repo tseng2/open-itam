@@ -161,6 +161,28 @@ CREATE TABLE IF NOT EXISTS stocktake_items (
 CREATE INDEX IF NOT EXISTS idx_stocktake_items_task_result ON stocktake_items(stocktake_id, result);
 CREATE UNIQUE INDEX IF NOT EXISTS uk_stocktake_items_task_asset ON stocktake_items(stocktake_id, asset_id);
 CREATE INDEX IF NOT EXISTS idx_stocktake_items_company ON stocktake_items(company_id);
+
+CREATE TABLE IF NOT EXISTS asset_requests (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id         INTEGER NOT NULL,
+    asset_id           INTEGER NOT NULL,
+    applicant_id       INTEGER NOT NULL,
+    applicant_name     TEXT NOT NULL DEFAULT '',
+    is_long_term       INTEGER NOT NULL DEFAULT 0,
+    expected_return_at DATETIME,
+    reason             TEXT NOT NULL DEFAULT '',
+    status             INTEGER NOT NULL DEFAULT 10,
+    approved_by        INTEGER,
+    approved_at        DATETIME,
+    decision_remark    TEXT NOT NULL DEFAULT '',
+    created_at         DATETIME NOT NULL,
+    updated_at         DATETIME NOT NULL,
+    deleted_at         DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_requests_company_status ON asset_requests(company_id, status);
+CREATE INDEX IF NOT EXISTS idx_asset_requests_asset_status ON asset_requests(asset_id, status);
+CREATE INDEX IF NOT EXISTS idx_asset_requests_applicant ON asset_requests(applicant_id);
 `
 
 type SQLiteStore struct {
@@ -1161,4 +1183,193 @@ func (s *SQLiteStore) CountStocktakeResults(ctx context.Context, companyID, stoc
 		counts[int(result)] = n
 	}
 	return counts, rows.Err()
+}
+
+// ---- 设备申请（阶段五 P0-β）----
+
+const assetRequestColumns = `id, company_id, asset_id, applicant_id, applicant_name, is_long_term, expected_return_at, reason, status, approved_by, approved_at, decision_remark, created_at, updated_at`
+
+func scanAssetRequestRow(row interface{ Scan(...any) error }) (model.AssetRequest, error) {
+	var (
+		r          model.AssetRequest
+		isLongTerm int
+		returnAt   sql.NullTime
+		approvedBy sql.NullInt64
+		approvedAt sql.NullTime
+	)
+	err := row.Scan(&r.ID, &r.CompanyID, &r.AssetID, &r.ApplicantID, &r.ApplicantName,
+		&isLongTerm, &returnAt, &r.Reason, &r.Status,
+		&approvedBy, &approvedAt, &r.DecisionRemark, &r.CreatedAt, &r.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.AssetRequest{}, ErrNotFound
+	}
+	if err != nil {
+		return model.AssetRequest{}, err
+	}
+	r.IsLongTerm = isLongTerm == 1
+	if returnAt.Valid {
+		t := returnAt.Time
+		r.ExpectedReturnAt = &t
+	}
+	if approvedBy.Valid {
+		id := approvedBy.Int64
+		r.ApprovedBy = &id
+	}
+	if approvedAt.Valid {
+		t := approvedAt.Time
+		r.ApprovedAt = &t
+	}
+	return r, nil
+}
+
+func (s *SQLiteStore) CreateAssetRequest(ctx context.Context, r model.AssetRequest) (model.AssetRequest, error) {
+	r, err := validateAssetRequest(r)
+	if err != nil {
+		return model.AssetRequest{}, err
+	}
+	r.Status = model.AssetRequestStatusPending
+
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.AssetRequest{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // 提交后回滚是无害空操作
+
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM asset_requests
+		 WHERE company_id = ? AND asset_id = ? AND applicant_id = ? AND status = ? AND deleted_at IS NULL`,
+		r.CompanyID, r.AssetID, r.ApplicantID, model.AssetRequestStatusPending).Scan(&count); err != nil {
+		return model.AssetRequest{}, fmt.Errorf("count pending requests: %w", err)
+	}
+	if count > 0 {
+		return model.AssetRequest{}, ErrAlreadyExists
+	}
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO asset_requests
+		 (company_id, asset_id, applicant_id, applicant_name, is_long_term, expected_return_at, reason, status, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		r.CompanyID, r.AssetID, r.ApplicantID, r.ApplicantName,
+		sqliteBool(r.IsLongTerm), r.ExpectedReturnAt, r.Reason, r.Status, now, now)
+	if err != nil {
+		return model.AssetRequest{}, fmt.Errorf("insert asset request: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.AssetRequest{}, fmt.Errorf("asset request id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.AssetRequest{}, fmt.Errorf("commit asset request: %w", err)
+	}
+	r.ID = id
+	r.CreatedAt, r.UpdatedAt = now, now
+	return r, nil
+}
+
+func (s *SQLiteStore) ListAssetRequests(ctx context.Context, f AssetRequestListFilter) ([]model.AssetRequest, int64, error) {
+	page, size := normalizeAssetRequestPage(f.Page, f.PageSize)
+
+	where := "deleted_at IS NULL"
+	args := []any{}
+	if f.CompanyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, f.CompanyID)
+	}
+	if f.Status > 0 {
+		where += " AND status = ?"
+		args = append(args, f.Status)
+	}
+	if f.ApplicantID > 0 {
+		where += " AND applicant_id = ?"
+		args = append(args, f.ApplicantID)
+	}
+	if f.AssetID > 0 {
+		where += " AND asset_id = ?"
+		args = append(args, f.AssetID)
+	}
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM asset_requests WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count asset requests: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+assetRequestColumns+` FROM asset_requests WHERE `+where+
+			` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list asset requests: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.AssetRequest, 0, size)
+	for rows.Next() {
+		r, err := scanAssetRequestRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, r)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) GetAssetRequest(ctx context.Context, companyID, id int64) (model.AssetRequest, error) {
+	return scanAssetRequestRow(s.db.QueryRowContext(ctx,
+		`SELECT `+assetRequestColumns+` FROM asset_requests
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`, id, companyID))
+}
+
+// transitionAssetRequest 条件更新：仅待审批可流转，语义与 GormStore 一致
+func (s *SQLiteStore) transitionAssetRequest(ctx context.Context, companyID, id int64, toStatus int, extra map[string]any) (model.AssetRequest, error) {
+	query := `UPDATE asset_requests SET status = ?`
+	args := []any{toStatus}
+	for col, val := range extra {
+		query += `, ` + col + ` = ?`
+		args = append(args, val)
+	}
+	query += `, updated_at = ?`
+	args = append(args, time.Now().UTC())
+	query += ` WHERE id = ? AND company_id = ? AND status = ? AND deleted_at IS NULL`
+	args = append(args, id, companyID, model.AssetRequestStatusPending)
+
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return model.AssetRequest{}, fmt.Errorf("update asset request status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return model.AssetRequest{}, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		var exists int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM asset_requests WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+			id, companyID).Scan(&exists); err != nil {
+			return model.AssetRequest{}, fmt.Errorf("check asset request exists: %w", err)
+		}
+		if exists == 0 {
+			return model.AssetRequest{}, ErrNotFound
+		}
+		return model.AssetRequest{}, ErrInvalidState
+	}
+	return s.getAssetRequestByID(ctx, id)
+}
+
+func (s *SQLiteStore) getAssetRequestByID(ctx context.Context, id int64) (model.AssetRequest, error) {
+	return scanAssetRequestRow(s.db.QueryRowContext(ctx,
+		`SELECT `+assetRequestColumns+` FROM asset_requests WHERE id = ? AND deleted_at IS NULL`, id))
+}
+
+func (s *SQLiteStore) RejectAssetRequest(ctx context.Context, companyID, id int64, approverID int64, remark string, now time.Time) (model.AssetRequest, error) {
+	return s.transitionAssetRequest(ctx, companyID, id, model.AssetRequestStatusRejected, map[string]any{
+		"approved_by":     approverID,
+		"approved_at":     now,
+		"decision_remark": remark,
+	})
+}
+
+func (s *SQLiteStore) CancelAssetRequest(ctx context.Context, companyID, id int64) (model.AssetRequest, error) {
+	return s.transitionAssetRequest(ctx, companyID, id, model.AssetRequestStatusCanceled, nil)
 }
