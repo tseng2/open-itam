@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // 资产状态段位（此前仅散落为裸数字；P0-β 盘点圈定范围需排除已报废，借此常量化收口）
 const (
@@ -9,6 +12,54 @@ const (
 	AssetStatusRepair   = 30 // 维修中
 	AssetStatusScrapped = 40 // 已报废
 )
+
+// 资产类别段位：历史台账惯例值（无字典表），与前端 Assets.vue 表单下拉保持一致；
+// 台账 Excel 导入按中文名映射，收口在 AssetCategoryIDByName，禁止散落字符串字面量
+const (
+	AssetCategoryPC         int64 = 1 // 台式整机
+	AssetCategoryNotebook   int64 = 2 // 笔记本电脑
+	AssetCategoryMonitor    int64 = 3 // 显示器
+	AssetCategoryPeripheral int64 = 4 // 外设及其他
+)
+
+// assetCategoryNames 类别 ID → 规范中文名（落库 CategoryName 与导出展示共用同一来源）
+var assetCategoryNames = map[int64]string{
+	AssetCategoryPC:         "台式整机",
+	AssetCategoryNotebook:   "笔记本电脑",
+	AssetCategoryMonitor:    "显示器",
+	AssetCategoryPeripheral: "外设及其他",
+}
+
+// AssetCategoryName 类别 ID → 规范中文名；未知 ID 原样返回空串
+func AssetCategoryName(id int64) string { return assetCategoryNames[id] }
+
+// assetCategoryAliases 中文名/常见别名 → 类别 ID（Excel 导入容错，键统一小写）
+var assetCategoryAliases = map[string]int64{
+	"台式整机":  AssetCategoryPC,
+	"台式机":   AssetCategoryPC,
+	"台式电脑":  AssetCategoryPC,
+	"pc":    AssetCategoryPC,
+	"笔记本电脑": AssetCategoryNotebook,
+	"笔记本":   AssetCategoryNotebook,
+	"laptop": AssetCategoryNotebook,
+	"显示器":   AssetCategoryMonitor,
+	"屏幕":    AssetCategoryMonitor,
+	"外设及其他": AssetCategoryPeripheral,
+	"外设":    AssetCategoryPeripheral,
+	"其他":    AssetCategoryPeripheral,
+	"配件":    AssetCategoryPeripheral,
+}
+
+// AssetCategoryIDByName 台账 Excel 导入用：类别名 →（类别 ID，规范名）。
+// 名称做 trim + 小写归一后精确匹配，禁止模糊包含（类别是台账硬字段）；
+// 未识别返回 ok=false，由调用方作为行级错误上报
+func AssetCategoryIDByName(name string) (id int64, canonical string, ok bool) {
+	id, ok = assetCategoryAliases[strings.ToLower(strings.TrimSpace(name))]
+	if !ok {
+		return 0, "", false
+	}
+	return id, assetCategoryNames[id], true
+}
 
 // Asset 代表实物硬件资产台账（PC、笔记本、显示器、打印机等）
 type Asset struct {

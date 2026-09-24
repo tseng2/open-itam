@@ -5,6 +5,9 @@ import "time"
 // 事件类型常量（盘点核对等新代码引用；历史字符串就地沿用同一值）
 const AssetEventHardwareChange = "hardware_change"
 
+// AssetEventCreate 建账事件类型（手工登记与 Excel 批量导入共用）
+const AssetEventCreate = "create"
+
 // 财务销账（列管资产）事件类型：折旧完且财务销账的资产转"列管"继续跟踪，
 // 恢复在册则反向流转；off_book = 销账转列管，off_book_restore = 恢复在册
 const (
