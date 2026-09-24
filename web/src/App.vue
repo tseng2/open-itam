@@ -51,6 +51,10 @@
             <el-icon><FullScreen /></el-icon>
             <span>盘点任务</span>
           </el-menu-item>
+          <el-menu-item index="/asset-requests">
+            <el-icon><Checked /></el-icon>
+            <span>设备申请审批</span>
+          </el-menu-item>
           <el-menu-item index="/software">
             <el-icon><Tickets /></el-icon>
             <span>软件与授权许可</span>
@@ -148,6 +152,7 @@ const currentRouteTitle = computed(() => {
     '/assets': '硬件固定资产台账',
     '/dispatches': '外派出差终端管理',
     '/stocktakes': '盘点任务管理',
+    '/asset-requests': '设备申请审批',
     '/devices': '终端设备画像',
     '/changes': '硬件变更与预警中心',
     '/organization': '组织架构与人员',

@@ -219,6 +219,27 @@
           </el-descriptions>
         </el-card>
 
+        <!-- 申请中卡片：该资产有待审批申请时展示（阶段五 P0-β 审批流） -->
+        <el-card v-if="pendingRequests.length" shadow="never" class="dispatch-card">
+          <template #header>
+            <div class="dispatch-card-header">
+              <span>设备申请（待审批 {{ pendingRequests.length }}）</span>
+            </div>
+          </template>
+          <div v-for="req in pendingRequests" :key="req.id" class="request-row">
+            <el-tag type="warning" size="small">待审批</el-tag>
+            <span class="req-applicant">{{ req.applicant_name }}</span>
+            <el-tag :type="req.is_long_term ? 'success' : 'info'" size="small">
+              {{ req.is_long_term ? '长期领用' : '短期借用' }}
+            </el-tag>
+            <span class="req-reason">{{ req.reason }}</span>
+            <template v-if="isDrawerAdmin">
+              <el-button size="small" type="success" @click="approveAssetRequestFromDrawer(req)">通过</el-button>
+              <el-button size="small" type="danger" plain @click="rejectAssetRequestFromDrawer(req)">驳回</el-button>
+            </template>
+          </div>
+        </el-card>
+
         <el-descriptions title="基础实物档案" :column="2" border style="margin-bottom: 20px">
           <el-descriptions-item label="固定资产编码">
             <strong style="color: #2563eb">{{ currentAsset.asset_tag }}</strong>
@@ -782,6 +803,7 @@ const deviceDetail = ref(null)
 const assetEvents = ref([])
 const assetRepairs = ref([])
 const activeDispatch = ref(null)
+const pendingRequests = ref([])
 const activeTab = ref('hardware')
 const softSearch = ref('')
 
@@ -803,6 +825,17 @@ const pendingReviewEvent = computed(() => {
 const dispatchOverdue = computed(() => {
   const d = activeDispatch.value
   return !!d && d.status === 10 && new Date(d.expected_return_at).getTime() < Date.now()
+})
+
+// 抽屉内审批按钮只对 admin/super_admin 展示（后端另有 RoleMiddleware 兜底）
+const isDrawerAdmin = computed(() => {
+  try {
+    const raw = localStorage.getItem('itagent_user')
+    const role = raw ? JSON.parse(raw).role : ''
+    return role === 'admin' || role === 'super_admin'
+  } catch {
+    return false
+  }
 })
 
 // 组装机无真实出厂 SN 时，服务端以终端指纹（device_id）暂代，页面上给出区分提示
@@ -994,14 +1027,17 @@ async function openAssetDetail(row) {
   drawerVisible.value = true
   drawerLoading.value = true
   try {
-    const [eventsRes, repairsRes, dispatchRes] = await Promise.all([
+    const [eventsRes, repairsRes, dispatchRes, requestsRes] = await Promise.all([
       api(`/api/v1/assets/${row.id}/events`).catch(() => ({ data: [] })),
       api(`/api/v1/assets/${row.id}/repairs`).catch(() => ({ data: [] })),
-      api(`/api/v1/dispatches?company_id=${row.company_id}&asset_id=${row.id}&status=10`).catch(() => ({ data: { items: [] } }))
+      api(`/api/v1/dispatches?company_id=${row.company_id}&asset_id=${row.id}&status=10`).catch(() => ({ data: { items: [] } })),
+      // 待审批申请（普通用户视角后端自动限定为自己的）
+      api(`/api/v1/asset-requests?company_id=${row.company_id}&asset_id=${row.id}&status=10`).catch(() => ({ data: { items: [] } }))
     ])
     assetEvents.value = eventsRes.data || []
     assetRepairs.value = repairsRes.data || []
     activeDispatch.value = (dispatchRes.data?.items || [])[0] || null
+    pendingRequests.value = requestsRes.data?.items || []
 
     const deviceId = row.device?.device_id || ''
     if (deviceId) {
@@ -1308,6 +1344,57 @@ async function cancelDispatch() {
   }
 }
 
+// 抽屉内审批动作（阶段五 P0-β）：通过即绑定领用人，重载抽屉与列表
+async function approveAssetRequestFromDrawer(req) {
+  try {
+    await ElMessageBox.confirm(
+      `通过 ${req.applicant_name} 的申请？审批通过即绑定领用人、台账转为使用中并写入履历。`,
+      '审批通过',
+      { type: 'warning', confirmButtonText: '通过', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api(`/api/v1/asset-requests/${req.id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ company_id: req.company_id }),
+    })
+    ElMessage.success('已通过，资产已绑定领用人')
+    fetchAssets()
+    if (currentAsset.value) {
+      await refreshCurrentAsset()
+      await openAssetDetail(currentAsset.value)
+    }
+  } catch (err) {
+    ElMessage.error(err.message || '审批失败')
+  }
+}
+
+async function rejectAssetRequestFromDrawer(req) {
+  let remark = ''
+  try {
+    const { value } = await ElMessageBox.prompt('驳回该申请？原因将反馈给申请人。', '驳回申请', {
+      confirmButtonText: '驳回', cancelButtonText: '取消', inputPlaceholder: '驳回原因',
+    })
+    remark = value || ''
+  } catch {
+    return
+  }
+  try {
+    await api(`/api/v1/asset-requests/${req.id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ company_id: req.company_id, decision_remark: remark }),
+    })
+    ElMessage.success('已驳回')
+    if (currentAsset.value) {
+      await openAssetDetail(currentAsset.value)
+    }
+  } catch (err) {
+    ElMessage.error(err.message || '驳回失败')
+  }
+}
+
 // 按资产编码重新拉取当前行，刷新 presence 等服务端计算字段
 // （列表行数据是查询时快照，抽屉内动作后需重取避免展示陈旧联系状态）
 async function refreshCurrentAsset() {
@@ -1455,6 +1542,26 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.request-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  flex-wrap: wrap;
+}
+.req-applicant {
+  font-weight: 600;
+  color: #1f2937;
+}
+.req-reason {
+  color: #6b7280;
+  font-size: 13px;
+  flex: 1;
+  min-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .overdue-text {
   color: #dc2626;
