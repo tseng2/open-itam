@@ -25,6 +25,8 @@ type Config struct {
 	AdminToken          string
 	DefaultHeartbeatSec int
 	DefaultFullSec      int
+	// A2 失联语义分层：资产联系状态的离线判定阈值（秒），0 = 默认 15 分钟
+	OfflineThresholdSec int
 	// Agent 安装包更新清单文件路径（JSON：version/file/sha256/notes），
 	// 为空时不下发更新
 	UpdateManifest string
@@ -35,6 +37,9 @@ type Handler struct {
 	cfg   Config
 	mux   *http.ServeMux
 }
+
+// defaultOfflineThreshold A2 失联判定的默认离线阈值：15 分钟容忍一次心跳丢失
+const defaultOfflineThreshold = 15 * time.Minute
 
 func NewHandler(s store.Store, cfg Config) *Handler {
 	h := &Handler{store: s, cfg: cfg, mux: http.NewServeMux()}
@@ -51,7 +56,13 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.Handle("POST /api/v1/changes/{id}/ack", h.admin(h.handleAckChange))
 
 	// 挂载全新 ITAM 资产管理与集团公司路由
-	ginEngine := SetupRouter()
+	// A2 失联语义分层：资产列表联系状态的离线判定阈值，未配置时默认 15 分钟
+	// （容忍一次心跳丢失），源头是 server.json 的 offline_threshold_sec
+	offlineThreshold := time.Duration(cfg.OfflineThresholdSec) * time.Second
+	if offlineThreshold <= 0 {
+		offlineThreshold = defaultOfflineThreshold
+	}
+	ginEngine := SetupRouter(offlineThreshold)
 	h.mux.Handle("/api/v1/auth", ginEngine)
 	h.mux.Handle("/api/v1/auth/", ginEngine)
 	h.mux.Handle("/api/v1/assets", ginEngine)

@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,10 +14,15 @@ import (
 	"gorm.io/gorm"
 )
 
-type AssetHandler struct{}
+// AssetHandler 资产台账管理接口。
+// offlineThreshold 为 A2 失联语义分层的离线判定阈值，源头是 server.json，
+// 经 SetupRouter → RegisterAssetRoutes 显式注入，禁止在业务逻辑硬编码
+type AssetHandler struct {
+	offlineThreshold time.Duration
+}
 
-func RegisterAssetRoutes(r *gin.RouterGroup) {
-	h := &AssetHandler{}
+func RegisterAssetRoutes(r *gin.RouterGroup, offlineThreshold time.Duration) {
+	h := &AssetHandler{offlineThreshold: offlineThreshold}
 	assets := r.Group("/assets")
 	{
 		assets.GET("", h.List)
@@ -125,10 +132,50 @@ func (h *AssetHandler) List(c *gin.Context) {
 		return
 	}
 
+	if err := h.enrichPresence(c.Request.Context(), items); err != nil {
+		Fail(c, http.StatusInternalServerError, 50001, "failed to resolve presence")
+		return
+	}
+
 	Success(c, PageResult{
 		Total: total,
 		Items: items,
 	})
+}
+
+// enrichPresence 批量计算资产联系状态（A2 失联语义分层）：
+// 一次 IN 查询取全部进行中外派，避免逐资产 N+1；无 Agent 终端留空不参与判定
+func (h *AssetHandler) enrichPresence(ctx context.Context, items []model.Asset) error {
+	assetIDs := make([]int64, 0, len(items))
+	for _, a := range items {
+		assetIDs = append(assetIDs, a.ID)
+	}
+	var dispatches []model.AssetDispatch
+	if err := store.DB.WithContext(ctx).
+		Where("asset_id IN ? AND status = ?", assetIDs, model.DispatchStatusActive).
+		Find(&dispatches).Error; err != nil {
+		return fmt.Errorf("query active dispatches: %w", err)
+	}
+	dispatchByAsset := make(map[int64]*model.AssetDispatch, len(dispatches))
+	for i := range dispatches {
+		dispatchByAsset[dispatches[i].AssetID] = &dispatches[i]
+	}
+
+	now := time.Now().UTC()
+	for i := range items {
+		a := &items[i]
+		if a.Device == nil {
+			continue
+		}
+		a.Presence = model.ResolvePresence(model.PresenceInput{
+			Now:              now,
+			HeartbeatTimeout: h.offlineThreshold,
+			LastSeenAt:       a.Device.LastSeenAt,
+			PublicIP:         a.Device.PublicIP,
+			ActiveDispatch:   dispatchByAsset[a.ID],
+		})
+	}
+	return nil
 }
 
 type CreateAssetRequest struct {

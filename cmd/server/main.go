@@ -21,6 +21,8 @@ type serverConfig struct {
 	AdminToken          string `json:"admin_token"`
 	DefaultHeartbeatSec int    `json:"default_heartbeat_sec"`
 	DefaultFullSec      int    `json:"default_full_sec"`
+	// A2 失联语义分层：资产联系状态的离线判定阈值（秒），0 = 服务端默认 15 分钟
+	OfflineThresholdSec int    `json:"offline_threshold_sec"`
 	// Agent 更新清单（version/file/sha256），默认 data/updates/manifest.json
 	UpdateManifest string `json:"update_manifest"`
 }
@@ -77,6 +79,7 @@ func main() {
 		AdminToken:          cfg.AdminToken,
 		DefaultHeartbeatSec: cfg.DefaultHeartbeatSec,
 		DefaultFullSec:      cfg.DefaultFullSec,
+		OfflineThresholdSec: cfg.OfflineThresholdSec,
 		UpdateManifest:      cfg.UpdateManifest,
 	})
 

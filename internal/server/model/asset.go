@@ -22,6 +22,10 @@ type Asset struct {
 	User           *User      `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	Status         int        `gorm:"default:10;index;not null" json:"status"`                // 10-库存中, 20-使用中, 30-维修中, 40-已报废
 
+	// 联系状态（阶段五 A2 失联语义分层）：服务端按 外派登记 × LastSeenAt × 心跳阈值
+	// 实时计算，不落库（gorm:"-"）；无 Agent 终端留空。五态定义见 presence.go
+	Presence       string     `gorm:"-" json:"presence,omitempty"`
+
 	Brand          string     `gorm:"type:varchar(64)" json:"brand"`                          // 品牌 (联想、DELL、苹果等)
 	ModelName      string     `gorm:"type:varchar(128)" json:"model"`                         // 型号规格
 	SerialNumber   string     `gorm:"type:varchar(128);index" json:"serial_number"`           // 硬件出厂序列号(SN/S/N码)
