@@ -3,6 +3,11 @@
     <router-view />
   </div>
 
+  <!-- 免登录移动扫码页（P0-β）：脱离管理端外壳，全屏移动布局 -->
+  <div v-else-if="isMobilePage" class="mobile-wrapper">
+    <router-view />
+  </div>
+
   <el-container v-else class="app-layout">
     <!-- 侧边导航栏 -->
     <el-aside width="240px" class="sidebar">
@@ -41,6 +46,10 @@
           <el-menu-item index="/dispatches">
             <el-icon><Suitcase /></el-icon>
             <span>外派出差终端</span>
+          </el-menu-item>
+          <el-menu-item index="/stocktakes">
+            <el-icon><FullScreen /></el-icon>
+            <span>盘点任务</span>
           </el-menu-item>
           <el-menu-item index="/software">
             <el-icon><Tickets /></el-icon>
@@ -122,6 +131,7 @@ const token = ref(getToken())
 const openChanges = ref(0)
 
 const isLoginPage = computed(() => route.path === '/login')
+const isMobilePage = computed(() => !!route.meta.mobile)
 
 const currentUser = computed(() => {
   try {
@@ -137,6 +147,7 @@ const currentRouteTitle = computed(() => {
     '/dashboard': '总览大盘',
     '/assets': '硬件固定资产台账',
     '/dispatches': '外派出差终端管理',
+    '/stocktakes': '盘点任务管理',
     '/devices': '终端设备画像',
     '/changes': '硬件变更与预警中心',
     '/organization': '组织架构与人员',
@@ -181,6 +192,12 @@ body {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+}
+/* 免登录移动扫码页：全屏布局，页面内部自带移动端样式 */
+.mobile-wrapper {
+  width: 100vw;
+  min-height: 100vh;
+  background: #f5f7fa;
 }
 .user-profile {
   display: flex;

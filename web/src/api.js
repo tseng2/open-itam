@@ -24,6 +24,21 @@ export async function api(path, opts = {}) {
   return data
 }
 
+// 免登录公开面（P0-β 移动扫码页）：不带 JWT，401 不跳登录；
+// 鉴权由路径中的盘点码承担，配合服务端 IP 限流
+export async function pubApi(path, opts = {}) {
+  const resp = await fetch(path, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  })
+  const data = await resp.json()
+  if (data.code !== 0) throw new Error(data.message || 'server error')
+  return data
+}
+
 export function timeAgo(ts) {
   if (!ts) return '-'
   const diff = (Date.now() - new Date(ts).getTime()) / 1000
