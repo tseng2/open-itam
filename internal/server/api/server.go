@@ -92,6 +92,13 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 易踩坑：不补这两行，外层 mux 直接 404 且构建测试全绿（A1 的教训）
 	h.mux.Handle("/api/v1/webhook-alerts", ginEngine)
 	h.mux.Handle("/api/v1/webhook-alerts/", ginEngine)
+	// 盘点任务（阶段五 P0-β，JWT + RoleMiddleware("admin")）；
+	// 免登录移动扫码面走 /api/public（一次性盘点令牌 + 限流），
+	// 两行都不可漏：外层 mux 不补则部署后 404 且构建测试全绿（A1 的教训）
+	h.mux.Handle("/api/v1/stocktakes", ginEngine)
+	h.mux.Handle("/api/v1/stocktakes/", ginEngine)
+	h.mux.Handle("/api/public", ginEngine)
+	h.mux.Handle("/api/public/", ginEngine)
 
 	return h
 }

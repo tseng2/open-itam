@@ -36,8 +36,13 @@ func SetupRouter(offlineThreshold time.Duration) *gin.Engine {
 			v1.RegisterProtectionRoutes(protected)
 			v1.RegisterDispatchRoutes(protected)
 			v1.RegisterWebhookAlertRoutes(protected)
+			v1.RegisterStocktakeRoutes(protected)
 		}
 	}
+
+	// 免登录移动扫码面（阶段五 P0-β）：项目首个非 JWT 公开面，
+	// 鉴权走盘点任务一次性扫码令牌 + 限流中间件，详见 stocktake_public.go
+	v1.RegisterStocktakePublicRoutes(apiV1)
 
 	return r
 }
