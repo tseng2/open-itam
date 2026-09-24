@@ -63,7 +63,11 @@
   - [x] 标签 PDF：`internal/server/label` 纯 Go（go-pdf/fpdf + boombuler/barcode 零 CGO），A4 3×7，QR 直达移动核对页
   - [x] A3 协同：核对"正常"自动确认 pending 的 hardware_change 待审事件；异常结果（丢失/损坏/报废）记 stocktake AssetEvent
   - [x] Web UI：盘点任务管理页（进度条/明细抽屉/修正核对/盘点码 QR 对话框/标签 PDF 下载）
-- [ ] **设备申请审批流**：`asset_requests` 状态机 + 审批即绑定领用人（单事务）
+- [x] **设备申请审批流**（2026-09-24 完成：store 测试 7 项 + gin API 6 项全绿）
+  - [x] 模型：`asset_requests`（申请人 + 姓名快照 / 目标资产 / 长期领用 vs 短期借用归期 / 事由 / 审批人与批注），状态机 pending→approved/rejected/canceled
+  - [x] **审批+绑定同事务**（CIYO 精髓）：approve 单事务完成申请流转 + 资产绑定领用人 + 台账 10→20 + AssetEvent(assign)；竞争申请 409 回滚保持 pending
+  - [x] 越权收口：user 角色只看/只撤自己的申请，审批/驳回仅 admin，管理员可代录（姓名快照取自用户表）
+  - [x] Web：设备申请页（用户提交 + admin 审批队列/驳回批注）+ 资产详情抽屉"申请中"卡片（就地通过/驳回）
 - [ ] **折旧规则引擎**：`depreciations` stages JSON 阶梯匹配 + 残值下限 + 定时任务刷净值
 
 ### P1 维度治理 / P2 体验运营

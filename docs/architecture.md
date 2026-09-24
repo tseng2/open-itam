@@ -442,6 +442,11 @@ sequenceDiagram
 | GET | `/api/v1/stocktakes/{id}/items` | 盘点明细分页（result/keyword 过滤，预载资产） |
 | POST | `/api/v1/stocktakes/{id}/items` | 管理端批量核对/修正（盘点中允许改判重核） |
 | POST | `/api/v1/stocktakes/labels` | 渲染资产标签 PDF（按任务明细或手选 asset_tags，≤500 枚；QR 直达移动核对页） |
+| GET/POST | `/api/v1/asset-requests` | 设备申请列表（company_id/status/applicant_id/asset_id 过滤+分页；user 角色强制只看自己）/ 提交申请（登录用户；admin 可代录 applicant_id） |
+| GET | `/api/v1/asset-requests/{id}` | 申请详情（user 仅限自己的申请，跨人按 404） |
+| POST | `/api/v1/asset-requests/{id}/approve` | 审批通过（仅 admin）：**单事务**完成申请流转 + 资产绑定领用人 + 台账 10→20 + AssetEvent(assign) |
+| POST | `/api/v1/asset-requests/{id}/reject` | 驳回（仅 admin，记决策人与原因，不动资产） |
+| POST | `/api/v1/asset-requests/{id}/cancel` | 撤回（申请人本人或 admin，仅待审批状态） |
 
 **免登录公开面（阶段五 P0-β 移动扫码，无 JWT）：**
 
@@ -462,6 +467,8 @@ sequenceDiagram
 **超期/失联 Webhook 告警契约（阶段五 A4，P0-α 收官）**：告警配置存 DB 单例表 `webhook_alert_config`（`enabled` / `webhook_url` / `secret` / `cooldown_minutes` 冷却窗口，Web UI 配置，**严禁塞 server.json**）；冷却状态表 `webhook_alert_states` 按 `(company_id, asset_id, alert_type)` 唯一键记录最近推送时间（进程重启不丢）。服务端 goroutine + time.Ticker（默认每分钟）定时扫描资产台账：**联系状态判定复用 `model.ResolveAssetPresence`（核心即 `ResolvePresence` 纯函数，离线阈值同 `offline_threshold_sec`，引擎/列表富化禁止各自重复实现）**，产出 `overdue`（外派中且过预计归期，带负责人/目的地/预计归期上下文）与 `missing`（无外派豁免且心跳超阈值，带最近心跳）两类告警，批量合并为单次 POST（`event: itam.alert`）；**secret 非空时携带 `X-ITAM-Signature` 头 = hex(HMAC-SHA256(secret, 原始请求体))**，接收端重算即可校验来源与完整性；出站 HTTP 强制超时（10s），接收端非 2xx 视为失败。**冷却去重**：同资产同类型在冷却窗口内不重复推送（默认 60 分钟，可配），期满仍未处理再次提醒；类型升级（missing→overdue）独立计窗；推送失败不落冷却状态、下一轮自动重试。配置与测试端点走 gin `/api/v1/webhook-alerts/*`（JWT + RoleMiddleware("admin")），secret 永不回传只回 `secret_set`；新增该前缀时已同步双层路由挂载表。
 
 **盘点任务契约（阶段五 P0-β，CIYO 对标）**：`stocktakes`（任务：`name` / `status` / `started_at` / `finished_at` / `created_by` / `scan_token_hash`）+ `stocktake_items`（明细快照：`asset_id` / `asset_tag` / `expected_location` / `expected_status` / `actual_location` / `result` / `scanned_by` / `scanned_at`，`(stocktake_id, asset_id)` 唯一）。任务状态机 `10 草稿 → 20 盘点中 → 30 已完成 / 40 已取消`（取消对草稿/盘点中开放，完成仅对盘点中）；明细状态机 `10 待盘 → 20 正常 / 30 丢失 / 40 损坏 / 50 报废`（盘点中允许改判重核，最后写入生效；结束后只读）。**圈定范围在创建时一次性快照**（管理端显式 asset_ids 或按 category/status/location/department 过滤，已报废资产不入范围），后续台账变动不影响本任务明细。**扫码安全模型（项目首个非 JWT 面）**：开始任务时生成 128-bit 随机盘点码，**库中只存 SHA-256 哈希，明文仅 start/rotate 时一次性返回**（无法找回，"查看"即轮换）；令牌有效期 = 任务处于盘点中（finish/cancel 即失效，rotate 止血）；公开面按 IP 固定窗口限流（默认 120 次/分钟），批量核对 ≤100 条、只按 asset_tag 定位；资产详情仅白名单字段（编码/类别/规格/序列号/位置/负责人），价格/备注等台账敏感信息与范围外资产信息一律不下发。**履历联动**：异常结果（丢失/损坏/报废）逐资产记 `stocktake` AssetEvent（ReviewStatus=10）；**"正常"结果自动确认该资产 pending 的 `hardware_change` 待审事件（A3 协同：盘点即天然的人工确认）**。标签 PDF：`internal/server/label` 纯 Go 渲染（go-pdf/fpdf + boombuler/barcode，零 CGO；fpdf 核心字体仅 Latin-1，**CJK 字段不入标签**——识别靠资产编码/SN/QR，中文详情在扫码后的移动页展示），A4 3×7 65×35mm，QR 内容 `${origin}/#/a/${asset_tag}`（base_url 由前端注入，二维码指向免登录移动路由）。移动页三条 hash 路由共用一个 Vue 视图：`/m/t/:token`（换码入口）→ `/m/scan`（扫码台）→ `/a/:number`（标签直达核对），盘点码本地记忆直至失效。
+
+**设备申请审批契约（阶段五 P0-β，CIYO 对标）**：`asset_requests`（`company_id` / `asset_id` / `applicant_id` + `applicant_name` 姓名快照 / `is_long_term` / `expected_return_at` / `reason` / `status` / `approved_by` / `approved_at` / `decision_remark`）。状态机 `10 待审批 → 20 已通过 / 30 已驳回 / 40 已取消`；**申请提交即指定目标资产**（仅库存中且未被领用可申请；权威校验在审批事务内），同一申请人对同一资产仅一条待审批（409），不同申请人竞争同一资产放行、由审批人裁决；短期借用必须带归期（长期领用归期强制清空）。**审批+绑定同事务（CIYO 精髓）**：approve 在单个 GORM 事务内完成「申请 pending→approved（条件更新）+ 资产绑定领用人（条件：status=10 且 user_id IS NULL）+ 台账状态 10→20 + `assign` AssetEvent（TargetPerson=申请人、ReturnDate=短期借用归期、OperatorID=审批人）」；**资产被抢先领用则整单回滚返回 409，竞争失败方保持 pending**。越权收口：user 角色列表/详情强制限定自己的申请（传 applicant_id 也无效，跨人跨公司统一 404）；审批/驳回仅 admin 与超管；管理员可代录（applicant_id 指定 + 姓名快照取自用户表，校验申请人属同公司）。
 
 **路由挂载约定（易踩坑）**：服务端是双层路由——外层 `net/http` ServeMux 负责 Agent 通道，并按**硬编码前缀**把管理 API 转给内层 gin 引擎（`internal/server/api/server.go` 的 `NewHandler`）。新增一类 gin 资源路由时，除了在 `api/router.go` 注册，还必须在该前缀挂载表中补一行 `/api/v1/<resource>`，否则外层 mux 会直接返回 404，且构建、单测都不会报错，只能部署后才会暴露。
 
