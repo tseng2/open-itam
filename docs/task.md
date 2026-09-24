@@ -68,7 +68,14 @@
   - [x] **审批+绑定同事务**（CIYO 精髓）：approve 单事务完成申请流转 + 资产绑定领用人 + 台账 10→20 + AssetEvent(assign)；竞争申请 409 回滚保持 pending
   - [x] 越权收口：user 角色只看/只撤自己的申请，审批/驳回仅 admin，管理员可代录（姓名快照取自用户表）
   - [x] Web：设备申请页（用户提交 + admin 审批队列/驳回批注）+ 资产详情抽屉"申请中"卡片（就地通过/驳回）
-- [ ] **折旧规则引擎**：`depreciations` stages JSON 阶梯匹配 + 残值下限 + 定时任务刷净值
+- [x] **折旧规则引擎**（2026-09-24 完成：纯函数 10 项 + 引擎 7 项 + store 6 项 + gin API 5 项全绿，覆盖率 86.6%+）
+  - [x] 模型：`depreciations`（公司维度规则：months 总月数 / floor_type(amount|percent) / floor_val / stages 阶梯 JSON / enabled），资产加 `depreciation_id` 挂接；stages 按时间顺序分段累计、段内整月线性折算，空 stages 走直线折旧
+  - [x] 计算核心收口 `internal/server/depreciation` 纯函数包（解析校验/月数/阶梯匹配/残值兜底/净值，API 校验与引擎共用）；坑：`enabled` 列不能加 `default:true` 标签（bool false 是合法值，GORM 会把零值替换成列默认值，停用规则建不出来）
+  - [x] Store 双实现 + SQLiteStore schema + AutoMigrate；被引用规则删除拦截在 API 层（409 返回引用数）
+  - [x] 引擎：goroutine + Ticker（默认每小时）刷净值，差异 ≥1 分才写库；停用/悬空/跨公司/缺购入日期/原值非正一律冻结现值；手动重算端点共用 ScanOnce
+  - [x] gin API（读面登录可读供资产表单下拉，写面/重算仅 admin）+ server.go 双层挂载表
+  - [x] **列管资产（财务维度，与运营状态正交）**：Asset 加 `off_book`/`off_book_at`，折旧完且财务销账的资产转"列管"继续跟踪使用直至报废变卖；严禁塞进 Status 状态机，展示层派生标签 + 列表筛选；销账/恢复端点联动 AssetEvent（off_book/off_book_restore）
+  - [x] Web：折旧规则管理页（阶梯动态编辑/引用拦截/手动重算）+ 资产表单折旧规则下拉 + 详情抽屉销账/恢复 + 列表"列管"标签与筛选
 
 ### P1 维度治理 / P2 体验运营
 - [ ] 型号库 / 供应商 / 厂商 / 位置库 / Excel 批量导入导出

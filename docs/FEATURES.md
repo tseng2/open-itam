@@ -67,10 +67,10 @@
   - [x] A2 失联语义分层：外派离线(预期内) / 超期未归(高危) / 疑似失联 / 漫游中 / 在线——纯展示规则，依据外派登记 × LastSeenAt，零表结构变更。（2026-09-24 完成）
   - [x] A3 硬件 Diff 自动比对：ingest 时比对 AssetVersion 基线 → 自动生成 hardware_change 事件（ReviewStatus=待审核）+ 详情页标红。（2026-09-24 完成：新增磁盘序列号/CPU 比对，修复 U 盘插拔误报）
   - [x] A4 超期/失联 Webhook 告警：仅 WebHook 单通道（消息中心的首场景切片）。（2026-09-24 完成：DB 配置 + Ticker 扫描 + HMAC 签名 + 冷却去重，webhook 包覆盖 90.4%）
-- [ ] **P0-β 复刻线：CIYO 对标三件套**
-  - [ ] 盘点任务：`stocktakes` / `stocktake_items` 状态机（draft→processing→finished；明细 pending→normal/lost/damaged/scrapped）+ 标签 PDF + 免登录移动扫码页（吃 A3 硬件 Diff 协同红利）。
-  - [ ] 设备申请审批流：pending→approved/rejected/canceled，审批即绑定领用人（单事务，无中间态悬挂）。
-  - [ ] 折旧规则引擎：stages JSON 阶梯匹配 + 残值下限 + 定时任务刷净值（对接现有 NetValue 字段）。
+- [x] **P0-β 复刻线：CIYO 对标三件套**（2026-09-24 全部完成）
+  - [x] 盘点任务：`stocktakes` / `stocktake_items` 状态机（draft→processing→finished；明细 pending→normal/lost/damaged/scrapped）+ 标签 PDF + 免登录移动扫码页（吃 A3 硬件 Diff 协同红利）。（2026-09-24 完成）
+  - [x] 设备申请审批流：pending→approved/rejected/canceled，审批即绑定领用人（单事务，无中间态悬挂）。（2026-09-24 完成）
+  - [x] 折旧规则引擎：stages JSON 阶梯匹配 + 残值下限 + 定时任务刷净值（对接现有 NetValue 字段）。（2026-09-24 完成：计算核心纯函数包 + 每小时引擎 + 手动重算 + 列管资产财务维度）
 - [ ] **P1 维度治理**：型号库（含寿命月数）/ 供应商 / 厂商 / 位置库（自由文本外键化）+ Excel 批量导入导出。
 - [ ] **P2 体验运营**：操作日志、消息中心（WebHook+站内信起步）、员工自助门户、报表中心、软件许可、耗材管理。
 
@@ -92,3 +92,4 @@
 - [x] **单文件安装器**（itagent-setup）：go:embed 内嵌 core-agent/tray/watchdog/smartctl + UAC 提权 + 服务端地址与安装令牌经 `-ldflags -X` 烧入，装完即注册上线。
 - [x] **盘点任务（扫码盘点闭环，2026-09-24）**：`stocktakes`/`stocktake_items` 双状态机 + 圈定范围一次性快照；管理端任务管理页（进度/明细抽屉/修正核对）；标签 PDF 纯 Go 渲染（零 CGO，QR 直达移动页）；免登录移动扫码核对页（盘点码一次性令牌只存哈希 + IP 限流 + 白名单视图，项目首个非 JWT 面）；核对"正常"自动确认 pending 硬件变更事件（吃 A3 协同红利），异常结果写入资产履历。
 - [x] **设备申请审批流（2026-09-24）**：`asset_requests` 状态机（待审批→通过/驳回/取消）；审批通过在单事务内完成资产绑定领用人 + 台账状态流转 + `assign` 履历（CIYO"审批+调拨同事务"精髓）；user 角色只看自己的申请、admin 审批队列 + 代录；资产详情抽屉就地审批。
+- [x] **折旧规则引擎（2026-09-24）**：`depreciations` 公司维度规则（stages JSON 按时间顺序分段累计折旧、段内整月线性折算、空 stages 直线折旧、floor 残值下限 amount/percent 双语义）；计算核心收口 `internal/server/depreciation` 纯函数包，API 校验与引擎共用同一口径；引擎 goroutine+Ticker 每小时刷挂接资产净值 + 手动重算端点；**列管资产（账销物留）**：`assets.off_book`/`off_book_at` 财务维度与运营状态正交，折旧完且财务销账的资产转"列管"继续跟踪使用直至报废变卖，销账/恢复联动 AssetEvent 留痕。

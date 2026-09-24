@@ -31,6 +31,7 @@
    │ ├ 变更告警引擎       │                │ 只读 ingest 转发/直写    │
    │ ├ SMART 健康预警     │                └──────────────────────────┘
    │ ├ 超期/失联告警引擎 │ (A4: Ticker 扫描→Webhook)
+   │ ├ 折旧规则引擎     │ (P0-β: 按规则定时刷资产净值)
    │ ├ Web 管理界面       │
    │ ├ Webhook 通知(预留) │ (P7 插件框架/IM 通道)
    │ └ Snipe-IT 连接器    │
@@ -447,6 +448,14 @@ sequenceDiagram
 | POST | `/api/v1/asset-requests/{id}/approve` | 审批通过（仅 admin）：**单事务**完成申请流转 + 资产绑定领用人 + 台账 10→20 + AssetEvent(assign) |
 | POST | `/api/v1/asset-requests/{id}/reject` | 驳回（仅 admin，记决策人与原因，不动资产） |
 | POST | `/api/v1/asset-requests/{id}/cancel` | 撤回（申请人本人或 admin，仅待审批状态） |
+| GET | `/api/v1/depreciations` | 折旧规则列表（company_id 必填+分页；**登录用户可读**——资产表单规则下拉依赖） |
+| GET | `/api/v1/depreciations/{id}` | 规则详情（company_id 必填，公司边界 404） |
+| POST | `/api/v1/depreciations` | 新建规则（仅 admin；stages/months/残值口径校验） |
+| PUT | `/api/v1/depreciations/{id}` | 更新规则（仅 admin） |
+| DELETE | `/api/v1/depreciations/{id}` | 删除规则（仅 admin；**被资产引用时 409 并返回引用数**，需先解除挂接） |
+| POST | `/api/v1/depreciations/recalculate` | 手动重算净值（仅 admin；返回本轮更新资产数，无需等定时任务） |
+| POST | `/api/v1/assets/{id}/off-book` | 财务销账转列管（仅 admin；重复销账 409、已报废 400；联动 `off_book` AssetEvent 留痕） |
+| POST | `/api/v1/assets/{id}/restore-book` | 恢复在册（仅 admin；未销账 409；联动 `off_book_restore` AssetEvent） |
 
 **免登录公开面（阶段五 P0-β 移动扫码，无 JWT）：**
 
@@ -469,6 +478,8 @@ sequenceDiagram
 **盘点任务契约（阶段五 P0-β，CIYO 对标）**：`stocktakes`（任务：`name` / `status` / `started_at` / `finished_at` / `created_by` / `scan_token_hash`）+ `stocktake_items`（明细快照：`asset_id` / `asset_tag` / `expected_location` / `expected_status` / `actual_location` / `result` / `scanned_by` / `scanned_at`，`(stocktake_id, asset_id)` 唯一）。任务状态机 `10 草稿 → 20 盘点中 → 30 已完成 / 40 已取消`（取消对草稿/盘点中开放，完成仅对盘点中）；明细状态机 `10 待盘 → 20 正常 / 30 丢失 / 40 损坏 / 50 报废`（盘点中允许改判重核，最后写入生效；结束后只读）。**圈定范围在创建时一次性快照**（管理端显式 asset_ids 或按 category/status/location/department 过滤，已报废资产不入范围），后续台账变动不影响本任务明细。**扫码安全模型（项目首个非 JWT 面）**：开始任务时生成 128-bit 随机盘点码，**库中只存 SHA-256 哈希，明文仅 start/rotate 时一次性返回**（无法找回，"查看"即轮换）；令牌有效期 = 任务处于盘点中（finish/cancel 即失效，rotate 止血）；公开面按 IP 固定窗口限流（默认 120 次/分钟），批量核对 ≤100 条、只按 asset_tag 定位；资产详情仅白名单字段（编码/类别/规格/序列号/位置/负责人），价格/备注等台账敏感信息与范围外资产信息一律不下发。**履历联动**：异常结果（丢失/损坏/报废）逐资产记 `stocktake` AssetEvent（ReviewStatus=10）；**"正常"结果自动确认该资产 pending 的 `hardware_change` 待审事件（A3 协同：盘点即天然的人工确认）**。标签 PDF：`internal/server/label` 纯 Go 渲染（go-pdf/fpdf + boombuler/barcode，零 CGO；fpdf 核心字体仅 Latin-1，**CJK 字段不入标签**——识别靠资产编码/SN/QR，中文详情在扫码后的移动页展示），A4 3×7 65×35mm，QR 内容 `${origin}/#/a/${asset_tag}`（base_url 由前端注入，二维码指向免登录移动路由）。移动页三条 hash 路由共用一个 Vue 视图：`/m/t/:token`（换码入口）→ `/m/scan`（扫码台）→ `/a/:number`（标签直达核对），盘点码本地记忆直至失效。
 
 **设备申请审批契约（阶段五 P0-β，CIYO 对标）**：`asset_requests`（`company_id` / `asset_id` / `applicant_id` + `applicant_name` 姓名快照 / `is_long_term` / `expected_return_at` / `reason` / `status` / `approved_by` / `approved_at` / `decision_remark`）。状态机 `10 待审批 → 20 已通过 / 30 已驳回 / 40 已取消`；**申请提交即指定目标资产**（仅库存中且未被领用可申请；权威校验在审批事务内），同一申请人对同一资产仅一条待审批（409），不同申请人竞争同一资产放行、由审批人裁决；短期借用必须带归期（长期领用归期强制清空）。**审批+绑定同事务（CIYO 精髓）**：approve 在单个 GORM 事务内完成「申请 pending→approved（条件更新）+ 资产绑定领用人（条件：status=10 且 user_id IS NULL）+ 台账状态 10→20 + `assign` AssetEvent（TargetPerson=申请人、ReturnDate=短期借用归期、OperatorID=审批人）」；**资产被抢先领用则整单回滚返回 409，竞争失败方保持 pending**。越权收口：user 角色列表/详情强制限定自己的申请（传 applicant_id 也无效，跨人跨公司统一 404）；审批/驳回仅 admin 与超管；管理员可代录（applicant_id 指定 + 姓名快照取自用户表，校验申请人属同公司）。
+
+**折旧规则引擎契约（阶段五 P0-β，CIYO 对标）**：`depreciations` 表（`company_id` / `name` / `months` 总折旧月数 / `floor_type`（`amount` 固定金额｜`percent` 残值率）/ `floor_val` / `stages` 阶梯 JSON / `enabled` / `remark`）；资产经 `assets.depreciation_id` 挂接（NULL = 不参与自动折旧，净值人工维护）。**阶梯语义**：`stages` 为 `[{period, unit(MONTH/YEAR), ratio}]` 数组，按购置时长顺序分段消费——前一段走完才进入下一段，段内按整月线性折算，ratio 为该段累计折旧比例（各段之和 ≤ 1）；配置阶梯时 months 必须等于阶梯覆盖月数（入口校验）；**stages 为空则按 months 直线折旧**。净值 = 原值 ×（1 - 折旧比例），再套残值下限（amount 绝对额 / percent 原值×残值率），四舍五入到分；amount 残值误配大于原值时以原值封顶。计算核心收口在 `internal/server/depreciation` 纯函数包（引擎扫描与 API 校验共用，禁止在模型外复制口径）。**引擎**：goroutine + Ticker（默认每小时）扫全部启用规则 → 加载挂接资产 → 差异 ≥1 分才写库（幂等空转不写）；**停用规则/悬空引用/跨公司引用/缺购入日期/原值非正一律冻结现值不动**；手动重算端点与引擎共用 ScanOnce。**列管资产（财务维度，与运营状态正交）**：`assets.off_book` + `off_book_at`——折旧完且财务销账的资产转"列管"继续跟踪使用，走完报废流程变卖才离场；**严禁把列管塞进 Asset.Status 状态机**（盘点圈定/审批流都依赖现有状态语义），展示层以派生标签渲染（off_book && 未报废）+ 列表 off_book 筛选；销账/恢复动作联动 `off_book` / `off_book_restore` AssetEvent（含发生时净值快照），重复销账/未销账恢复均 409，已报废资产不可销账（400）。模型层注意：`enabled` 列不能加 GORM `default:true` 标签——bool 零值 false（停用）是合法值，带 default 标签时 Create 会把零值替换成列默认值，停用规则永远建不出来。
 
 **路由挂载约定（易踩坑）**：服务端是双层路由——外层 `net/http` ServeMux 负责 Agent 通道，并按**硬编码前缀**把管理 API 转给内层 gin 引擎（`internal/server/api/server.go` 的 `NewHandler`）。新增一类 gin 资源路由时，除了在 `api/router.go` 注册，还必须在该前缀挂载表中补一行 `/api/v1/<resource>`，否则外层 mux 会直接返回 404，且构建、单测都不会报错，只能部署后才会暴露。
 
