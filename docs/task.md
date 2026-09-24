@@ -45,9 +45,10 @@
 - [x] **A2 失联语义分层**（2026-09-24 完成：presence 纯函数 12 项测试 + API 富化 3 项集成测试全绿）
   - [x] 规则：在线 / 漫游中 / 外派离线(预期内) / 超期未归(高危) / 疑似失联（依据外派登记 × LastSeenAt 计算，五态见 model/presence.go）
   - [x] 资产列表/详情页状态标签渲染（服务端计算 presence 字段，前端只渲染）
-- [ ] **A3 硬件 Diff 自动比对**
-  - [ ] ingest 时比对 AssetVersion 最新基线快照（内存/磁盘/CPU 数量与序列号）
-  - [ ] 变更 → 自动生成 `hardware_change` AssetEvent（ReviewStatus=20 待审核）+ 详情页标红
+- [x] **A3 硬件 Diff 自动比对**（2026-09-24 完成：compareHardware 纯函数 10 项 + ingest 端到端 2 项全绿；首次覆盖 syncToAssetLedger 测试路径）
+  - [x] ingest 时比对 AssetVersion 最新基线快照（内存/内置磁盘数量/磁盘序列号/CPU 数量与型号）
+  - [x] 变更 → 自动生成 `hardware_change` AssetEvent（ReviewStatus=20 待审核）+ 详情页标红（复用既有警告框与待审核标签）
+  - [x] 幂等：待审核事件存在期间不重复生成（审核通过更新基线后才会再次检测）；U 盘插拔不再误报（Removable 过滤）
 - [ ] **A4 超期/失联 Webhook 告警**
   - [ ] Webhook 配置存储 + 定时扫描（超期未归/疑似失联）
   - [ ] 仅 WebHook 单通道推送
