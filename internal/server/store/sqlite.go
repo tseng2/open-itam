@@ -77,6 +77,28 @@ CREATE TABLE IF NOT EXISTS uninstall_codes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_uninstall_codes_device ON uninstall_codes(device_id, code);
+
+CREATE TABLE IF NOT EXISTS asset_dispatches (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id         INTEGER NOT NULL,
+    asset_id           INTEGER NOT NULL,
+    borrower_name      TEXT NOT NULL DEFAULT '',
+    destination        TEXT NOT NULL DEFAULT '',
+    dispatched_at      DATETIME NOT NULL,
+    expected_return_at DATETIME NOT NULL,
+    returned_at        DATETIME,
+    isolation_offline  INTEGER NOT NULL DEFAULT 0,
+    expect_wipe        INTEGER NOT NULL DEFAULT 0,
+    status             INTEGER NOT NULL DEFAULT 10,
+    remark             TEXT NOT NULL DEFAULT '',
+    created_at         DATETIME NOT NULL,
+    updated_at         DATETIME NOT NULL,
+    deleted_at         DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_dispatches_company_status ON asset_dispatches(company_id, status);
+CREATE INDEX IF NOT EXISTS idx_asset_dispatches_asset_status ON asset_dispatches(asset_id, status);
+CREATE INDEX IF NOT EXISTS idx_asset_dispatches_return_by ON asset_dispatches(expected_return_at);
 `
 
 type SQLiteStore struct {
@@ -416,4 +438,195 @@ func (s *SQLiteStore) VerifyUninstallCode(ctx context.Context, deviceID, code st
 		return ErrUnauthorized
 	}
 	return nil
+}
+
+func sqliteBool(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+const dispatchColumns = `id, company_id, asset_id, borrower_name, destination, dispatched_at, expected_return_at, returned_at, isolation_offline, expect_wipe, status, remark, created_at, updated_at`
+
+func scanDispatchRow(row interface{ Scan(...any) error }) (model.AssetDispatch, error) {
+	var (
+		d          model.AssetDispatch
+		returnedAt sql.NullTime
+	)
+	err := row.Scan(&d.ID, &d.CompanyID, &d.AssetID, &d.BorrowerName, &d.Destination,
+		&d.DispatchedAt, &d.ExpectedReturnAt, &returnedAt,
+		&d.IsolationOffline, &d.ExpectWipe, &d.Status, &d.Remark, &d.CreatedAt, &d.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.AssetDispatch{}, ErrNotFound
+	}
+	if err != nil {
+		return model.AssetDispatch{}, err
+	}
+	if returnedAt.Valid {
+		d.ReturnedAt = &returnedAt.Time
+	}
+	return d, nil
+}
+
+func (s *SQLiteStore) CreateDispatch(ctx context.Context, d model.AssetDispatch) (model.AssetDispatch, error) {
+	if err := validateDispatch(d); err != nil {
+		return model.AssetDispatch{}, err
+	}
+	if d.Status == 0 {
+		d.Status = model.DispatchStatusActive
+	}
+	if d.Status != model.DispatchStatusActive {
+		return model.AssetDispatch{}, fmt.Errorf("new dispatch must be in active status")
+	}
+	if d.DispatchedAt.IsZero() {
+		d.DispatchedAt = time.Now().UTC()
+	}
+
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.AssetDispatch{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // 提交后回滚是无害空操作
+
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM asset_dispatches
+		 WHERE company_id = ? AND asset_id = ? AND status = ? AND deleted_at IS NULL`,
+		d.CompanyID, d.AssetID, model.DispatchStatusActive).Scan(&count); err != nil {
+		return model.AssetDispatch{}, fmt.Errorf("count active dispatches: %w", err)
+	}
+	if count > 0 {
+		return model.AssetDispatch{}, ErrAlreadyExists
+	}
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO asset_dispatches
+		 (company_id, asset_id, borrower_name, destination, dispatched_at, expected_return_at,
+		  isolation_offline, expect_wipe, status, remark, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		d.CompanyID, d.AssetID, d.BorrowerName, d.Destination,
+		d.DispatchedAt.UTC(), d.ExpectedReturnAt.UTC(),
+		sqliteBool(d.IsolationOffline), sqliteBool(d.ExpectWipe),
+		d.Status, d.Remark, now, now)
+	if err != nil {
+		return model.AssetDispatch{}, fmt.Errorf("insert dispatch: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.AssetDispatch{}, fmt.Errorf("dispatch id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.AssetDispatch{}, fmt.Errorf("commit dispatch: %w", err)
+	}
+	d.ID = id
+	d.CreatedAt, d.UpdatedAt = now, now
+	return d, nil
+}
+
+func (s *SQLiteStore) ListDispatches(ctx context.Context, f DispatchListFilter) ([]model.AssetDispatch, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+
+	where := "deleted_at IS NULL"
+	args := []any{}
+	if f.CompanyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, f.CompanyID)
+	}
+	if f.AssetID > 0 {
+		where += " AND asset_id = ?"
+		args = append(args, f.AssetID)
+	}
+	if f.Status > 0 {
+		where += " AND status = ?"
+		args = append(args, f.Status)
+	}
+	if f.Overdue != nil {
+		if *f.Overdue {
+			where += " AND status = ? AND expected_return_at < ?"
+		} else {
+			where += " AND NOT (status = ? AND expected_return_at < ?)"
+		}
+		args = append(args, model.DispatchStatusActive, time.Now().UTC())
+	}
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM asset_dispatches WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count dispatches: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+dispatchColumns+` FROM asset_dispatches WHERE `+where+
+			` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list dispatches: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.AssetDispatch, 0, size)
+	for rows.Next() {
+		d, err := scanDispatchRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, d)
+	}
+	return items, total, rows.Err()
+}
+
+// transitionDispatchStatus 条件更新：仅"外派中"可流转；未命中时区分
+// "不存在或跨公司"与"状态不允许"两类失败，与 GormStore 语义保持一致
+func (s *SQLiteStore) transitionDispatchStatus(ctx context.Context, companyID, id int64, toStatus int, returnedAt *time.Time) (model.AssetDispatch, error) {
+	query := `UPDATE asset_dispatches SET status = ?, updated_at = ?`
+	args := []any{toStatus, time.Now().UTC()}
+	if returnedAt != nil {
+		query += `, returned_at = ?`
+		args = append(args, returnedAt.UTC())
+	}
+	query += ` WHERE id = ? AND company_id = ? AND status = ? AND deleted_at IS NULL`
+	args = append(args, id, companyID, model.DispatchStatusActive)
+
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return model.AssetDispatch{}, fmt.Errorf("update dispatch status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return model.AssetDispatch{}, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		var exists int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM asset_dispatches WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+			id, companyID).Scan(&exists); err != nil {
+			return model.AssetDispatch{}, fmt.Errorf("check dispatch exists: %w", err)
+		}
+		if exists == 0 {
+			return model.AssetDispatch{}, ErrNotFound
+		}
+		return model.AssetDispatch{}, ErrInvalidState
+	}
+	return s.getDispatchByID(ctx, id)
+}
+
+func (s *SQLiteStore) getDispatchByID(ctx context.Context, id int64) (model.AssetDispatch, error) {
+	return scanDispatchRow(s.db.QueryRowContext(ctx,
+		`SELECT `+dispatchColumns+` FROM asset_dispatches WHERE id = ? AND deleted_at IS NULL`, id))
+}
+
+func (s *SQLiteStore) ReturnDispatch(ctx context.Context, companyID, id int64, returnedAt time.Time) (model.AssetDispatch, error) {
+	return s.transitionDispatchStatus(ctx, companyID, id, model.DispatchStatusReturned, &returnedAt)
+}
+
+func (s *SQLiteStore) CancelDispatch(ctx context.Context, companyID, id int64) (model.AssetDispatch, error) {
+	return s.transitionDispatchStatus(ctx, companyID, id, model.DispatchStatusCanceled, nil)
+}
+
+func (s *SQLiteStore) GetActiveDispatchByAsset(ctx context.Context, companyID, assetID int64) (model.AssetDispatch, error) {
+	return scanDispatchRow(s.db.QueryRowContext(ctx,
+		`SELECT `+dispatchColumns+` FROM asset_dispatches
+		 WHERE company_id = ? AND asset_id = ? AND status = ? AND deleted_at IS NULL`,
+		companyID, assetID, model.DispatchStatusActive))
 }

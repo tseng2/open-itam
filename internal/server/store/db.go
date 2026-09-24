@@ -60,6 +60,7 @@ func InitDB(dbType, dsn string) (*gorm.DB, error) {
 		&model.AgentChangeEvent{},
 		&model.ProtectionModule{},
 		&model.UninstallCode{},
+		&model.AssetDispatch{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("auto migration failed: %w", err)

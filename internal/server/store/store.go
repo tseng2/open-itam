@@ -13,7 +13,19 @@ var (
 	ErrNotFound      = errors.New("record not found")
 	ErrUnauthorized  = errors.New("invalid credentials")
 	ErrAlreadyExists = errors.New("record already exists")
+	ErrInvalidState  = errors.New("invalid state transition")
 )
+
+// DispatchListFilter 外派登记列表查询条件；Overdue 三态：
+// nil 不过滤 / true 仅超期未归（外派中且已过预计归期）/ false 排除超期未归
+type DispatchListFilter struct {
+	CompanyID int64
+	AssetID   int64
+	Status    int
+	Overdue   *bool
+	Page      int
+	PageSize  int
+}
 
 type Device struct {
 	DeviceID     string    `json:"device_id"`
@@ -69,5 +81,11 @@ type Store interface {
 	PutProtectionModule(ctx context.Context, m model.ProtectionModule) error
 	CreateUninstallCode(ctx context.Context, deviceID string, ttl time.Duration) (model.UninstallCode, error)
 	VerifyUninstallCode(ctx context.Context, deviceID, code string) error
+	// 外派登记（阶段五 A1）：一个资产同时只允许一条外派中记录
+	CreateDispatch(ctx context.Context, d model.AssetDispatch) (model.AssetDispatch, error)
+	ListDispatches(ctx context.Context, f DispatchListFilter) ([]model.AssetDispatch, int64, error)
+	ReturnDispatch(ctx context.Context, companyID, id int64, returnedAt time.Time) (model.AssetDispatch, error)
+	CancelDispatch(ctx context.Context, companyID, id int64) (model.AssetDispatch, error)
+	GetActiveDispatchByAsset(ctx context.Context, companyID, assetID int64) (model.AssetDispatch, error)
 	Close() error
 }
