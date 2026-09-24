@@ -36,12 +36,12 @@
 ## 阶段五：ITAM 业务闭环（当前优先，2026-09-24 起）
 
 ### P0-α 差异化线：长期出差终端管理（推荐顺序 A1 → A2 → A3 → A4）
-- [ ] **A1 外派登记**
-  - [ ] 模型：`asset_dispatches`（company_id / asset_id / 负责人 / 目的地 / 外派日期 / 预计归期 / 隔离级别 / 预期格式化标记 / 状态），TDD 先行（store 测试）
-  - [ ] Store 接口 + GormStore + SQLiteStore 双实现
-  - [ ] gin admin API（创建/列表/归还/作废）+ 路由注册
-  - [ ] Web UI：外派登记页 + 资产详情页外派状态
-  - [ ] 外派/归还动作联动 AssetEvent 记录
+- [x] **A1 外派登记**（2026-09-24 完成：store 测试 9 项 + API 集成测试 3 项全绿）
+  - [x] 模型：`asset_dispatches`（company_id / asset_id / 负责人 / 目的地 / 外派日期 / 预计归期 / 隔离级别 / 预期格式化标记 / 状态），TDD 先行（store 测试）
+  - [x] Store 接口 + GormStore + SQLiteStore 双实现
+  - [x] gin admin API（创建/列表/归还/作废）+ 路由注册（含 server.go 双层路由挂载表）
+  - [x] Web UI：外派登记页 + 资产详情页外派状态
+  - [x] 外派/归还动作联动 AssetEvent 记录
 - [ ] **A2 失联语义分层**（纯展示规则）
   - [ ] 规则：在线 / 漫游中 / 外派离线(预期内) / 超期未归(高危) / 疑似失联（依据外派登记 × LastSeenAt 计算）
   - [ ] 资产列表/详情页状态标签渲染
