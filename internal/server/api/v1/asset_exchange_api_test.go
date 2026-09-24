@@ -298,6 +298,32 @@ func TestAssetImportFileAndRuleValidation(t *testing.T) {
 		t.Fatalf("junk file status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
+	// 全部行未通过校验 → 仍走行级错误路径（40006 带明细），而非笼统的"没有数据行"
+	allBad := exchangeSheet(t, []string{"资产编码", "类别"}, [][]interface{}{
+		{"", "台式机"},       // 编码为空
+		{"IT-BAD", "平板电脑"}, // 类别未识别
+	})
+	body, ct = importMultipart(t, "import.xlsx", allBad, map[string]string{
+		"company_id": fmt.Sprintf("%d", companyID),
+	})
+	rec := doImportRequest(t, r, token, body, ct)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("all-bad import status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var allBadResp dispatchAPIResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &allBadResp); err != nil || allBadResp.Code != 40006 {
+		t.Fatalf("all-bad resp should be 40006 with row detail: err=%v code=%d body=%s",
+			err, allBadResp.Code, rec.Body.String())
+	}
+	var allBadPayload struct {
+		Errors     []assetexcel.RowError `json:"errors"`
+		ErrorCount int                    `json:"error_count"`
+	}
+	if err := json.Unmarshal(allBadResp.Data, &allBadPayload); err != nil ||
+		allBadPayload.ErrorCount != 2 || len(allBadPayload.Errors) != 2 {
+		t.Fatalf("all-bad payload: %+v err=%v", allBadPayload, err)
+	}
+
 	// 折旧规则不存在 / 跨公司 → 404（规则属于另一公司）
 	other := model.Company{Name: "另一家公司-" + t.Name()}
 	if err := store.DB.Create(&other).Error; err != nil {

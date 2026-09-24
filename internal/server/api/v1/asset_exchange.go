@@ -171,7 +171,9 @@ func (h *AssetExchangeHandler) Import(c *gin.Context) {
 		Fail(c, http.StatusBadRequest, 40005, err.Error())
 		return
 	}
-	if len(rows) == 0 {
+	// 只有"既无合法行也无行级错误"（如整行全空）才算没有数据；
+	// 全部行未通过校验时继续走行级错误路径，把明细带给用户
+	if len(rows) == 0 && len(rowErrs) == 0 {
 		Fail(c, http.StatusBadRequest, 40005, "表格没有可导入的数据行")
 		return
 	}
