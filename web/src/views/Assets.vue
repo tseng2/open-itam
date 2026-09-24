@@ -299,6 +299,9 @@
           <el-descriptions-item label="品牌与型号规格">
             <strong>{{ currentAsset.brand }}</strong> {{ currentAsset.model }}
           </el-descriptions-item>
+          <el-descriptions-item label="供应商">
+            {{ currentAsset.supplier_name || '-' }}
+          </el-descriptions-item>
           <el-descriptions-item label="出厂序列号 (SN)">
             {{ currentAsset.serial_number || '-' }}
             <el-tooltip
@@ -542,13 +545,32 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="品牌">
-              <el-input v-model="form.brand" placeholder="如: 联想 / DELL / 苹果" />
+            <el-form-item label="厂商">
+              <el-select
+                v-model="form.manufacturer_id"
+                clearable
+                filterable
+                placeholder="从厂商库选择，可输入过滤"
+                style="width: 100%"
+              >
+                <el-option v-for="m in manufacturers" :key="m.id" :label="m.name" :value="m.id" />
+              </el-select>
+              <div class="form-tip">维度治理：选项在「基础数据」页维护；清空仅解除挂接，不改品牌文本</div>
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="型号规格">
-              <el-input v-model="form.model" placeholder="如: ThinkPad E490" />
+              <el-select
+                v-model="form.model_id"
+                clearable
+                filterable
+                placeholder="从型号库选择，自动带出厂商与折旧规则"
+                style="width: 100%"
+                @change="onModelPick"
+              >
+                <el-option v-for="m in modelOptions" :key="m.id" :label="m.name" :value="m.id" />
+              </el-select>
+              <div class="form-tip">选项按当前类别过滤；型号库为空先到「基础数据」维护</div>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -577,7 +599,16 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="存放位置或用途">
-              <el-input v-model="form.location" placeholder="主要存放位置或用途" />
+              <el-select
+                v-model="form.location_id"
+                clearable
+                filterable
+                placeholder="从位置库选择，可输入过滤"
+                style="width: 100%"
+              >
+                <el-option v-for="l in locations" :key="l.id" :label="l.name" :value="l.id" />
+              </el-select>
+              <div class="form-tip">清空仅解除挂接，位置文本保留</div>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -675,6 +706,19 @@
                 />
               </el-select>
               <div class="form-tip">挂接后折旧引擎按购入时间自动刷净值，人工改净值会被下一轮覆盖</div>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="供应商">
+              <el-select
+                v-model="form.supplier_id"
+                clearable
+                filterable
+                placeholder="采购来源（可留空）"
+                style="width: 100%"
+              >
+                <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
+              </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -1005,6 +1049,11 @@ const form = reactive({
   original_price: 0,
   net_value: 0,
   depreciation_id: '',
+  // 维度治理外键（P1）：'' = 不挂接（建账 null / 编辑 0），选项来自基础数据维表
+  manufacturer_id: '',
+  model_id: '',
+  supplier_id: '',
+  location_id: '',
   sec_encrypted: false,
   remark: '',
 })
@@ -1203,6 +1252,10 @@ function resetForm() {
     original_price: 0,
     net_value: 0,
     depreciation_id: '',
+    manufacturer_id: '',
+    model_id: '',
+    supplier_id: '',
+    location_id: '',
     sec_encrypted: false,
     remark: '',
   })
@@ -1247,6 +1300,10 @@ function openEditDialog() {
     original_price: a.original_price || 0,
     net_value: a.net_value || 0,
     depreciation_id: a.depreciation_id || '',
+    manufacturer_id: a.manufacturer_id || '',
+    model_id: a.model_id || '',
+    supplier_id: a.supplier_id || '',
+    location_id: a.location_id || '',
     sec_encrypted: !!a.sec_encrypted,
     remark: a.remark || '',
   })
@@ -1614,8 +1671,61 @@ function depreciationRuleName(ruleID) {
   return r ? `${r.name}（共${r.months}个月）` : `规则 #${ruleID}`
 }
 
-// 表单公司切换即换规则下拉（规则是公司维度实体）
-watch(() => form.company_id, (id) => fetchDepreciationRules(id))
+// 表单公司切换即换规则与维度下拉（均为公司维度实体）
+watch(() => form.company_id, (id) => {
+  fetchDepreciationRules(id)
+  fetchDimensionOptions(id)
+})
+
+// 维度治理下拉（P1）：厂商/型号/位置/供应商按公司缓存，与折旧规则下拉同款模式。
+// 维表量级天然有限，page_size=200 一页拉全；四路并发，失败安静降级（下拉空但不阻塞表单）
+const manufacturers = ref([])
+const assetModels = ref([])
+const locations = ref([])
+const suppliers = ref([])
+let dimensionOptionsCompanyID = 0
+
+async function fetchDimensionOptions(companyID) {
+  if (!companyID) {
+    manufacturers.value = []
+    assetModels.value = []
+    locations.value = []
+    suppliers.value = []
+    dimensionOptionsCompanyID = 0
+    return
+  }
+  if (dimensionOptionsCompanyID === companyID) return
+  const common = `company_id=${companyID}&page_size=200`
+  try {
+    const [mfrRes, mdlRes, locRes, supRes] = await Promise.all([
+      api(`/api/v1/manufacturers?${common}`),
+      api(`/api/v1/asset-models?${common}`),
+      api(`/api/v1/locations?${common}`),
+      api(`/api/v1/suppliers?${common}`),
+    ])
+    manufacturers.value = mfrRes.data?.items || []
+    assetModels.value = mdlRes.data?.items || []
+    locations.value = locRes.data?.items || []
+    suppliers.value = supRes.data?.items || []
+    dimensionOptionsCompanyID = companyID
+  } catch (err) {
+    console.error('failed to fetch dimension options', err)
+  }
+}
+
+// 型号下拉按当前类别过滤（类别 0=不限的型号全放行），从源头杜绝挂错类别
+const modelOptions = computed(() =>
+  assetModels.value.filter(m => !m.category_id || m.category_id === form.category_id)
+)
+
+// 选型号自动带出厂商与预挂折旧规则：只填空位，不覆盖已显式选择的值；
+// 服务端在权威校验之外再做一次兜底继承（建账未显式挂规则时）
+function onModelPick(modelID) {
+  const m = assetModels.value.find(item => item.id === modelID)
+  if (!m) return
+  if (!form.manufacturer_id && m.manufacturer_id) form.manufacturer_id = m.manufacturer_id
+  if (!form.depreciation_id && m.depreciation_id) form.depreciation_id = m.depreciation_id
+}
 
 async function fetchAssets() {
   loading.value = true
@@ -1758,12 +1868,18 @@ async function submitCreate() {
     try {
       // date-picker 空值时是空字符串，后端 *time.Time 无法解析，统一置为 null
       const categoryNames = { 1: '台式整机', 2: '笔记本电脑', 3: '显示器', 4: '外设及其他' }
+      // 维度外键空值语义与折旧规则一致：建账空 → null（不挂接）；编辑空 → 0（解除挂接）
+      const dimensionValue = (v) => (editMode.value ? (v || 0) : (v || null))
       const payload = {
         ...form,
         purchase_date: form.purchase_date || null,
         category_name: categoryNames[form.category_id] || '',
         // 建账空值 → null（不挂接）；编辑空值 → 0（解除挂接），后端按语义区分
         depreciation_id: editMode.value ? (form.depreciation_id || 0) : (form.depreciation_id || null),
+        manufacturer_id: dimensionValue(form.manufacturer_id),
+        model_id: dimensionValue(form.model_id),
+        supplier_id: dimensionValue(form.supplier_id),
+        location_id: dimensionValue(form.location_id),
       }
       if (editMode.value) {
         await api(`/api/v1/assets/${form.id}`, {
