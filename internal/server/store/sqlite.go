@@ -121,6 +121,46 @@ CREATE TABLE IF NOT EXISTS webhook_alert_states (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_alert_state ON webhook_alert_states(company_id, asset_id, alert_type);
+
+CREATE TABLE IF NOT EXISTS stocktakes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id      INTEGER NOT NULL,
+    name            TEXT NOT NULL,
+    remark          TEXT NOT NULL DEFAULT '',
+    status          INTEGER NOT NULL DEFAULT 10,
+    started_at      DATETIME,
+    finished_at     DATETIME,
+    created_by      INTEGER,
+    scan_token_hash TEXT NOT NULL DEFAULT '',
+    created_at      DATETIME NOT NULL,
+    updated_at      DATETIME NOT NULL,
+    deleted_at      DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_stocktakes_company_status ON stocktakes(company_id, status);
+CREATE INDEX IF NOT EXISTS idx_stocktakes_token ON stocktakes(scan_token_hash);
+
+CREATE TABLE IF NOT EXISTS stocktake_items (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id        INTEGER NOT NULL,
+    stocktake_id      INTEGER NOT NULL,
+    asset_id          INTEGER NOT NULL,
+    asset_tag         TEXT NOT NULL,
+    expected_location TEXT NOT NULL DEFAULT '',
+    expected_status   INTEGER NOT NULL DEFAULT 10,
+    actual_location   TEXT NOT NULL DEFAULT '',
+    result            INTEGER NOT NULL DEFAULT 10,
+    scanned_by        TEXT NOT NULL DEFAULT '',
+    scanned_at        DATETIME,
+    remark            TEXT NOT NULL DEFAULT '',
+    created_at        DATETIME NOT NULL,
+    updated_at        DATETIME NOT NULL,
+    deleted_at        DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_stocktake_items_task_result ON stocktake_items(stocktake_id, result);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_stocktake_items_task_asset ON stocktake_items(stocktake_id, asset_id);
+CREATE INDEX IF NOT EXISTS idx_stocktake_items_company ON stocktake_items(company_id);
 `
 
 type SQLiteStore struct {
@@ -720,4 +760,405 @@ func (s *SQLiteStore) PutWebhookAlertState(ctx context.Context, st model.Webhook
 		return fmt.Errorf("put webhook alert state: %w", err)
 	}
 	return nil
+}
+
+// ---- 盘点任务（阶段五 P0-β）----
+
+const stocktakeColumns = `id, company_id, name, remark, status, started_at, finished_at, created_by, scan_token_hash, created_at, updated_at`
+
+func scanStocktakeRow(row interface{ Scan(...any) error }) (model.Stocktake, error) {
+	var (
+		st         model.Stocktake
+		startedAt  sql.NullTime
+		finishedAt sql.NullTime
+		createdBy  sql.NullInt64
+	)
+	err := row.Scan(&st.ID, &st.CompanyID, &st.Name, &st.Remark, &st.Status,
+		&startedAt, &finishedAt, &createdBy, &st.ScanTokenHash, &st.CreatedAt, &st.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Stocktake{}, ErrNotFound
+	}
+	if err != nil {
+		return model.Stocktake{}, err
+	}
+	if startedAt.Valid {
+		st.StartedAt = &startedAt.Time
+	}
+	if finishedAt.Valid {
+		st.FinishedAt = &finishedAt.Time
+	}
+	if createdBy.Valid {
+		id := createdBy.Int64
+		st.CreatedBy = &id
+	}
+	return st, nil
+}
+
+const stocktakeItemColumns = `id, company_id, stocktake_id, asset_id, asset_tag, expected_location, expected_status, actual_location, result, scanned_by, scanned_at, remark, created_at, updated_at`
+
+func scanStocktakeItemRow(row interface{ Scan(...any) error }) (model.StocktakeItem, error) {
+	var (
+		it        model.StocktakeItem
+		scannedAt sql.NullTime
+	)
+	err := row.Scan(&it.ID, &it.CompanyID, &it.StocktakeID, &it.AssetID, &it.AssetTag,
+		&it.ExpectedLocation, &it.ExpectedStatus, &it.ActualLocation, &it.Result,
+		&it.ScannedBy, &scannedAt, &it.Remark, &it.CreatedAt, &it.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.StocktakeItem{}, ErrNotFound
+	}
+	if err != nil {
+		return model.StocktakeItem{}, err
+	}
+	if scannedAt.Valid {
+		it.ScannedAt = &scannedAt.Time
+	}
+	return it, nil
+}
+
+func (s *SQLiteStore) CreateStocktake(ctx context.Context, st model.Stocktake, items []model.StocktakeItem) (model.Stocktake, error) {
+	if err := validateStocktake(st, items); err != nil {
+		return model.Stocktake{}, err
+	}
+	st.Status = model.StocktakeStatusDraft
+
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Stocktake{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // 提交后回滚是无害空操作
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO stocktakes (company_id, name, remark, status, created_by, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?)`,
+		st.CompanyID, st.Name, st.Remark, st.Status, st.CreatedBy, now, now)
+	if err != nil {
+		return model.Stocktake{}, fmt.Errorf("insert stocktake: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.Stocktake{}, fmt.Errorf("stocktake id: %w", err)
+	}
+	for _, it := range items {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO stocktake_items
+			 (company_id, stocktake_id, asset_id, asset_tag, expected_location, expected_status, result, created_at, updated_at)
+			 VALUES (?,?,?,?,?,?,?,?,?)`,
+			st.CompanyID, id, it.AssetID, it.AssetTag, it.ExpectedLocation, it.ExpectedStatus,
+			model.StocktakeItemPending, now, now); err != nil {
+			return model.Stocktake{}, fmt.Errorf("insert stocktake item: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Stocktake{}, fmt.Errorf("commit stocktake: %w", err)
+	}
+	st.ID = id
+	st.CreatedAt, st.UpdatedAt = now, now
+	return st, nil
+}
+
+func (s *SQLiteStore) ListStocktakes(ctx context.Context, f StocktakeListFilter) ([]model.Stocktake, int64, error) {
+	page, size := normalizeStocktakePage(f.Page, f.PageSize)
+
+	where := "deleted_at IS NULL"
+	args := []any{}
+	if f.CompanyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, f.CompanyID)
+	}
+	if f.Status > 0 {
+		where += " AND status = ?"
+		args = append(args, f.Status)
+	}
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM stocktakes WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count stocktakes: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+stocktakeColumns+` FROM stocktakes WHERE `+where+
+			` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list stocktakes: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.Stocktake, 0, size)
+	for rows.Next() {
+		st, err := scanStocktakeRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, st)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) GetStocktake(ctx context.Context, companyID, id int64) (model.Stocktake, error) {
+	return scanStocktakeRow(s.db.QueryRowContext(ctx,
+		`SELECT `+stocktakeColumns+` FROM stocktakes WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		id, companyID))
+}
+
+// transitionStocktake 条件更新驱动状态机，语义与 GormStore 保持一致：
+// 未命中时区分"不存在或跨公司"与"状态不允许"
+func (s *SQLiteStore) transitionStocktake(ctx context.Context, companyID, id int64, fromStatuses []int, toStatus int, extra map[string]any) (model.Stocktake, error) {
+	query := `UPDATE stocktakes SET status = ?, updated_at = ?`
+	args := []any{toStatus, time.Now().UTC()}
+	for col, val := range extra {
+		query += `, ` + col + ` = ?`
+		args = append(args, val)
+	}
+	query += ` WHERE id = ? AND company_id = ? AND status IN (`
+	args = append(args, id, companyID)
+	for i, from := range fromStatuses {
+		if i > 0 {
+			query += `,`
+		}
+		query += `?`
+		args = append(args, from)
+	}
+	query += `) AND deleted_at IS NULL`
+
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return model.Stocktake{}, fmt.Errorf("update stocktake status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return model.Stocktake{}, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		var exists int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM stocktakes WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+			id, companyID).Scan(&exists); err != nil {
+			return model.Stocktake{}, fmt.Errorf("check stocktake exists: %w", err)
+		}
+		if exists == 0 {
+			return model.Stocktake{}, ErrNotFound
+		}
+		return model.Stocktake{}, ErrInvalidState
+	}
+	return s.getStocktakeByID(ctx, id)
+}
+
+func (s *SQLiteStore) getStocktakeByID(ctx context.Context, id int64) (model.Stocktake, error) {
+	return scanStocktakeRow(s.db.QueryRowContext(ctx,
+		`SELECT `+stocktakeColumns+` FROM stocktakes WHERE id = ? AND deleted_at IS NULL`, id))
+}
+
+func (s *SQLiteStore) StartStocktake(ctx context.Context, companyID, id int64) (model.Stocktake, string, error) {
+	token, err := newScanToken()
+	if err != nil {
+		return model.Stocktake{}, "", fmt.Errorf("generate scan token: %w", err)
+	}
+	st, err := s.transitionStocktake(ctx, companyID, id,
+		[]int{model.StocktakeStatusDraft}, model.StocktakeStatusProcessing,
+		map[string]any{"started_at": time.Now().UTC(), "scan_token_hash": hashScanToken(token)})
+	return st, token, err
+}
+
+func (s *SQLiteStore) RotateStocktakeToken(ctx context.Context, companyID, id int64) (string, error) {
+	token, err := newScanToken()
+	if err != nil {
+		return "", fmt.Errorf("generate scan token: %w", err)
+	}
+	_, err = s.transitionStocktake(ctx, companyID, id,
+		[]int{model.StocktakeStatusProcessing}, model.StocktakeStatusProcessing,
+		map[string]any{"scan_token_hash": hashScanToken(token)})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *SQLiteStore) FinishStocktake(ctx context.Context, companyID, id int64, finishedAt time.Time) (model.Stocktake, error) {
+	return s.transitionStocktake(ctx, companyID, id,
+		[]int{model.StocktakeStatusProcessing}, model.StocktakeStatusFinished,
+		map[string]any{"finished_at": finishedAt})
+}
+
+func (s *SQLiteStore) CancelStocktake(ctx context.Context, companyID, id int64) (model.Stocktake, error) {
+	return s.transitionStocktake(ctx, companyID, id,
+		[]int{model.StocktakeStatusDraft, model.StocktakeStatusProcessing}, model.StocktakeStatusCanceled, nil)
+}
+
+func (s *SQLiteStore) GetStocktakeByToken(ctx context.Context, token string) (model.Stocktake, error) {
+	if token == "" {
+		return model.Stocktake{}, ErrNotFound
+	}
+	return scanStocktakeRow(s.db.QueryRowContext(ctx,
+		`SELECT `+stocktakeColumns+` FROM stocktakes
+		 WHERE scan_token_hash = ? AND status = ? AND deleted_at IS NULL`,
+		hashScanToken(token), model.StocktakeStatusProcessing))
+}
+
+func (s *SQLiteStore) ListStocktakeItems(ctx context.Context, f StocktakeItemListFilter) ([]model.StocktakeItem, int64, error) {
+	page, size := normalizeStocktakePage(f.Page, f.PageSize)
+
+	where := "deleted_at IS NULL"
+	args := []any{}
+	if f.CompanyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, f.CompanyID)
+	}
+	if f.StocktakeID > 0 {
+		where += " AND stocktake_id = ?"
+		args = append(args, f.StocktakeID)
+	}
+	if f.Result > 0 {
+		where += " AND result = ?"
+		args = append(args, f.Result)
+	}
+	if f.Keyword != "" {
+		where += " AND asset_tag LIKE ?"
+		args = append(args, "%"+f.Keyword+"%")
+	}
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM stocktake_items WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count stocktake items: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+stocktakeItemColumns+` FROM stocktake_items WHERE `+where+
+			` ORDER BY id ASC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list stocktake items: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.StocktakeItem, 0, size)
+	for rows.Next() {
+		it, err := scanStocktakeItemRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, it)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) CheckStocktakeItems(ctx context.Context, companyID, stocktakeID int64, checks []model.StocktakeCheck, scannedBy string) ([]model.StocktakeItem, error) {
+	if err := validateStocktakeChecks(checks); err != nil {
+		return nil, err
+	}
+	if scannedBy == "" {
+		return nil, fmt.Errorf("scanned_by required")
+	}
+	st, err := s.GetStocktake(ctx, companyID, stocktakeID)
+	if err != nil {
+		return nil, err
+	}
+	if st.Status != model.StocktakeStatusProcessing {
+		return nil, ErrInvalidState
+	}
+
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // 提交后回滚是无害空操作
+
+	for i, ck := range checks {
+		query := `UPDATE stocktake_items SET result = ?, scanned_by = ?, scanned_at = ?, updated_at = ?`
+		args := []any{ck.Result, scannedBy, now, now}
+		if ck.ActualLocation != "" {
+			query += `, actual_location = ?`
+			args = append(args, ck.ActualLocation)
+		}
+		if ck.Remark != "" {
+			query += `, remark = ?`
+			args = append(args, ck.Remark)
+		}
+		query += ` WHERE stocktake_id = ? AND company_id = ?`
+		args = append(args, stocktakeID, companyID)
+		if ck.ItemID > 0 {
+			query += ` AND id = ?`
+			args = append(args, ck.ItemID)
+		} else {
+			query += ` AND asset_tag = ?`
+			args = append(args, ck.AssetTag)
+		}
+		query += ` AND deleted_at IS NULL`
+
+		res, err := tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("update item %d: %w", i, err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil, ErrNotFound
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit checks: %w", err)
+	}
+
+	// 回读更新后的明细，按提交顺序排列
+	out := make([]model.StocktakeItem, 0, len(checks))
+	for _, ck := range checks {
+		var (
+			it  model.StocktakeItem
+			err error
+		)
+		if ck.ItemID > 0 {
+			it, err = s.getStocktakeItemByID(ctx, stocktakeID, companyID, ck.ItemID)
+		} else {
+			it, err = s.getStocktakeItemByTag(ctx, stocktakeID, companyID, ck.AssetTag)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) getStocktakeItemByID(ctx context.Context, stocktakeID, companyID, id int64) (model.StocktakeItem, error) {
+	return scanStocktakeItemRow(s.db.QueryRowContext(ctx,
+		`SELECT `+stocktakeItemColumns+` FROM stocktake_items
+		 WHERE id = ? AND stocktake_id = ? AND company_id = ? AND deleted_at IS NULL`,
+		id, stocktakeID, companyID))
+}
+
+func (s *SQLiteStore) getStocktakeItemByTag(ctx context.Context, stocktakeID, companyID int64, tag string) (model.StocktakeItem, error) {
+	return scanStocktakeItemRow(s.db.QueryRowContext(ctx,
+		`SELECT `+stocktakeItemColumns+` FROM stocktake_items
+		 WHERE asset_tag = ? AND stocktake_id = ? AND company_id = ? AND deleted_at IS NULL`,
+		tag, stocktakeID, companyID))
+}
+
+func (s *SQLiteStore) CountStocktakeResults(ctx context.Context, companyID, stocktakeID int64) (map[int]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT result, COUNT(*) FROM stocktake_items
+		 WHERE company_id = ? AND stocktake_id = ? AND deleted_at IS NULL GROUP BY result`,
+		companyID, stocktakeID)
+	if err != nil {
+		return nil, fmt.Errorf("count stocktake results: %w", err)
+	}
+	defer rows.Close()
+
+	counts := map[int]int64{
+		model.StocktakeItemPending:  0,
+		model.StocktakeItemNormal:   0,
+		model.StocktakeItemLost:     0,
+		model.StocktakeItemDamaged:  0,
+		model.StocktakeItemScrapped: 0,
+	}
+	for rows.Next() {
+		var result, n int64
+		if err := rows.Scan(&result, &n); err != nil {
+			return nil, fmt.Errorf("scan result count: %w", err)
+		}
+		counts[int(result)] = n
+	}
+	return counts, rows.Err()
 }

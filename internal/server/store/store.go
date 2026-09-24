@@ -93,5 +93,38 @@ type Store interface {
 	PutWebhookAlertConfig(ctx context.Context, cfg model.WebhookAlertConfig) error
 	ListWebhookAlertStates(ctx context.Context) ([]model.WebhookAlertState, error)
 	PutWebhookAlertState(ctx context.Context, st model.WebhookAlertState) error
+	// 盘点任务（阶段五 P0-β）：任务状态机 + 明细快照 + 扫码核对。
+	// 圈定范围的资产查询在 API 层完成（SQLiteStore 测试库无 assets 表），
+	// CreateStocktake 收到的即是已快照好的明细；扫码令牌只落哈希，
+	// 明文仅在 Start/Rotate 时一次性返回，有效期 = 任务处于盘点中
+	CreateStocktake(ctx context.Context, st model.Stocktake, items []model.StocktakeItem) (model.Stocktake, error)
+	ListStocktakes(ctx context.Context, f StocktakeListFilter) ([]model.Stocktake, int64, error)
+	GetStocktake(ctx context.Context, companyID, id int64) (model.Stocktake, error)
+	StartStocktake(ctx context.Context, companyID, id int64) (model.Stocktake, string, error)
+	RotateStocktakeToken(ctx context.Context, companyID, id int64) (string, error)
+	FinishStocktake(ctx context.Context, companyID, id int64, finishedAt time.Time) (model.Stocktake, error)
+	CancelStocktake(ctx context.Context, companyID, id int64) (model.Stocktake, error)
+	GetStocktakeByToken(ctx context.Context, token string) (model.Stocktake, error)
+	ListStocktakeItems(ctx context.Context, f StocktakeItemListFilter) ([]model.StocktakeItem, int64, error)
+	CheckStocktakeItems(ctx context.Context, companyID, stocktakeID int64, checks []model.StocktakeCheck, scannedBy string) ([]model.StocktakeItem, error)
+	CountStocktakeResults(ctx context.Context, companyID, stocktakeID int64) (map[int]int64, error)
 	Close() error
+}
+
+// StocktakeListFilter 盘点任务列表查询条件
+type StocktakeListFilter struct {
+	CompanyID int64
+	Status    int
+	Page      int
+	PageSize  int
+}
+
+// StocktakeItemListFilter 盘点明细列表查询条件：Keyword 模糊匹配 asset_tag
+type StocktakeItemListFilter struct {
+	CompanyID   int64
+	StocktakeID int64
+	Result      int
+	Keyword     string
+	Page        int
+	PageSize    int
 }

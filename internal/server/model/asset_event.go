@@ -2,6 +2,16 @@ package model
 
 import "time"
 
+// 事件类型常量（盘点核对等新代码引用；历史字符串就地沿用同一值）
+const AssetEventHardwareChange = "hardware_change"
+
+// 履历审核状态段位（此前仅散落在注释与裸数字中，P0-β 盘点核对需消费待审事件，常量化收口）
+const (
+	AssetEventReviewDone    = 10 // 已完成/无需审核
+	AssetEventReviewPending = 20 // 待审核
+	AssetEventReviewRejected = 30 // 已驳回
+)
+
 // AssetEvent 记录资产全生命周期事件（如调拨、维修、硬件升级、报废变更等）
 type AssetEvent struct {
 	BaseModel

@@ -2,6 +2,14 @@ package model
 
 import "time"
 
+// 资产状态段位（此前仅散落为裸数字；P0-β 盘点圈定范围需排除已报废，借此常量化收口）
+const (
+	AssetStatusStock    = 10 // 库存中
+	AssetStatusInUse    = 20 // 使用中
+	AssetStatusRepair   = 30 // 维修中
+	AssetStatusScrapped = 40 // 已报废
+)
+
 // Asset 代表实物硬件资产台账（PC、笔记本、显示器、打印机等）
 type Asset struct {
 	BaseModel
