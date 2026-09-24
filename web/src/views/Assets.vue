@@ -123,6 +123,14 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="联系状态" width="140">
+          <template #default="{ row }">
+            <el-tag v-if="row.presence" :type="presenceTagType(row.presence)">
+              {{ presenceText(row.presence) }}
+            </el-tag>
+            <span v-else class="empty-cell">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click.stop="openAssetDetail(row)">
@@ -252,6 +260,12 @@
           </el-descriptions-item>
           <el-descriptions-item label="关联计算机名">
             <el-tag size="small" type="success">{{ currentAsset.device?.hostname || currentAsset.asset_tag }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="联系状态">
+            <el-tag v-if="currentAsset.presence" :type="presenceTagType(currentAsset.presence)" size="small">
+              {{ presenceText(currentAsset.presence) }}
+            </el-tag>
+            <span v-else class="empty-cell">-</span>
           </el-descriptions-item>
           <el-descriptions-item label="购入时间">
             {{ formatDate(currentAsset.purchase_date) || '-' }}
@@ -914,6 +928,24 @@ function statusTagType(s) {
   return map[s] || ''
 }
 
+// 联系状态（A2 失联语义分层）：服务端按 外派登记 × LastSeenAt × 心跳阈值计算，
+// 前端只做渲染映射；overdue/missing 同为高危告警，靠文案区分
+function presenceText(p) {
+  const map = {
+    online: '在线',
+    roaming: '漫游中',
+    dispatch_offline: '外派离线(预期内)',
+    overdue: '超期未归(高危)',
+    missing: '疑似失联',
+  }
+  return map[p] || '-'
+}
+
+function presenceTagType(p) {
+  const map = { online: 'success', roaming: 'warning', dispatch_offline: 'info', overdue: 'danger', missing: 'danger' }
+  return map[p] || 'info'
+}
+
 const formatCPUs = computed(() => {
   const cpus = deviceDetail.value?.hardware?.cpu || []
   if (cpus.length > 0) {
@@ -1238,7 +1270,11 @@ async function returnDispatch() {
       body: JSON.stringify({ company_id: d.company_id }),
     })
     ElMessage.success('已登记归还')
-    if (currentAsset.value) await openAssetDetail(currentAsset.value)
+    fetchAssets()
+    if (currentAsset.value) {
+      await refreshCurrentAsset()
+      await openAssetDetail(currentAsset.value)
+    }
   } catch (err) {
     ElMessage.error(err.message || '归还失败')
   }
@@ -1262,10 +1298,25 @@ async function cancelDispatch() {
       body: JSON.stringify({ company_id: d.company_id }),
     })
     ElMessage.success('已作废该外派记录')
-    if (currentAsset.value) await openAssetDetail(currentAsset.value)
+    fetchAssets()
+    if (currentAsset.value) {
+      await refreshCurrentAsset()
+      await openAssetDetail(currentAsset.value)
+    }
   } catch (err) {
     ElMessage.error(err.message || '作废失败')
   }
+}
+
+// 按资产编码重新拉取当前行，刷新 presence 等服务端计算字段
+// （列表行数据是查询时快照，抽屉内动作后需重取避免展示陈旧联系状态）
+async function refreshCurrentAsset() {
+  if (!currentAsset.value) return
+  try {
+    const res = await api(`/api/v1/assets?asset_tag=${encodeURIComponent(currentAsset.value.asset_tag)}&page=1&page_size=5`)
+    const fresh = (res.data?.items || []).find(a => a.id === currentAsset.value.id)
+    if (fresh) currentAsset.value = fresh
+  } catch { /* ignore */ }
 }
 
 async function fetchCompanies() {
