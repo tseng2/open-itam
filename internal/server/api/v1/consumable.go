@@ -2,6 +2,7 @@ package v1
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -214,7 +215,36 @@ func (h *ConsumableHandler) postTxn(c *gin.Context, txnType string, delta int, r
 		failConsumableStoreError(c, err, "登记耗材流水失败")
 		return
 	}
+	// 站内信旁路：低库存预警沿触发（失败不阻塞流水响应）
+	maybeNotifyLowStock(c, delta, consumable)
 	Success(c, gin.H{"txn": txn, "consumable": consumable})
+}
+
+// maybeNotifyLowStock 耗材低库存预警（消息中心事件源）：沿触发防轰炸——
+// 只有「旧库存 > 预警线 且 新库存 ≤ 预警线」的那笔流水才投递。库存持续
+// 在低位不再重复轰炸，回补到线上后再次击穿才会再投；未配预警线（0）不
+// 预警（与列表 low_stock 口径一致）。旧库存由「新库存 - 增量」回推，
+// 免去事务前加读。通知投递是业务旁路：失败只走 gin 错误链，不阻塞响应
+func maybeNotifyLowStock(c *gin.Context, delta int, cons model.Consumable) {
+	if cons.MinQuantity <= 0 {
+		return
+	}
+	oldStock := cons.Stock - delta
+	if oldStock <= cons.MinQuantity || cons.Stock > cons.MinQuantity {
+		return
+	}
+	label := cons.Name
+	if cons.Spec != "" {
+		label += "（" + cons.Spec + "）"
+	}
+	notifyCompanyAdmins(c, model.Notification{
+		CompanyID:  cons.CompanyID,
+		Type:       model.NotificationTypeConsumableLowStock,
+		Title:      "耗材库存预警",
+		Content:    fmt.Sprintf("耗材 %s 库存触线：当前库存 %d，已触预警线 %d，请及时补货", label, cons.Stock, cons.MinQuantity),
+		Resource:   "consumables",
+		ResourceID: strconv.FormatInt(cons.ID, 10),
+	})
 }
 
 func (h *ConsumableHandler) StockIn(c *gin.Context) {
