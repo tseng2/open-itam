@@ -64,6 +64,7 @@
 - [ ] **多公司组织架构底座**：引入集团/多公司划分逻辑，所有核心表（资产、用户）必须挂载 `company_id` 或 `domain` 标识，为后续分公司权限控制打底。
 - [ ] **业务状态机**：为设备增加业务状态字段（库存、使用中、维修、报废等）。
 - [ ] **UI 资产大盘升级**：提供类似 Snipe-IT 的资产列表、详情页、时间轴展示，并支持按“公司”切分视图；支持手动添加带有“U8采购单号”的外设资产。
+- [x] **电脑台账五表对齐余项（阶段一遗留清欠）**：移动存储领用 / 配件出入库前端管理页。（2026-09-26 完成：纯 Web 补页——`/storage-lendings`、`/part-records` 两页挂资产管理组；storage-lendings PUT 指针字段契约修复为「未传保持、显式 null 清空」并 TDD 锁死，详见 architecture.md 移动存储/配件契约段）
 
 ### 阶段二：自动化与用户认领（实现真正的 IT 提效）
 - [ ] **人员目录同步**：参考 `ad-selfservice` 的架构，接入双域 AD 同步员工与组织架构目录，区分人员所属的集团子公司。
@@ -102,4 +103,5 @@
   - [x] 消息中心事件源扩展（阶段五收官）。（2026-09-25 完成：A4 告警联动站内信——webhook 引擎双通道出站，站内信独立于 WebHook 开关，冷却去重复用 webhook_alert_states 同表 notify_overdue/notify_missing 独立键，AlertNotifier 函数注入规避 webhook↔api/v1 循环依赖；耗材低库存沿触发——postTxn 旁路，旧库存>预警线且新库存≤线才投（旧库存由新库存-增量回推免加读），持续低位/回补不轰炸；许可到期窗口扫描——licensealert 引擎每小时+启动即扫，ExpiringDays 口径单源勿重写，同表 license_expiring 键（asset_id 列存许可 ID）冷却=窗口天数）
   - [x] JWT secret 配置化。（2026-09-25 完成：server.json jwt_secret + ITAGENT_JWT_SECRET 环境变量兜底 + 双缺省回落内置默认并启动告警；SetJWTSecret 启动注入包级 var，GenerateToken/ParseToken/AuthMiddleware 签名零波及；secret 变更后存量 token 全失效属预期；VM 生产 server.json 已注入 jwt_secret）
   - [x] 阶段五收官 VM 部署实测。（2026-09-25 完成，HEAD `a15c065` 生产 MariaDB：`vm_verify_events.py` 全 PASS——JWT 三查 + 三类通知落库 + 冷却键隔离（WebHook 通道键 0）+ 未读计数 5 + 二次重启冷却去重跨重启 + SQL 清理零残留；excel/dimension/p2/p2b 四套既有回归零回归 + health 全绿——阶段五全部收官）
+  - [x] 快赢双件：阶段一遗留前端清欠 + 独立消息中心页。（2026-09-26 完成：移动存储领用页 `/storage-lendings` + 配件出入库页 `/part-records`（模型与 API 阶段一就绪，纯 Web 补页；storage-lendings PUT「未传保持、显式 null 清空」契约修复并测试锁死——原实现日期清空静默失败）；独立消息中心页 `/notifications`（全员菜单）——类型过滤 + 未读开关 + 分页 + 就地已读跳转 + 全部已读，resource 路由映射收口共享模块 web/src/notifications.js 铃铛与页面共用，铃铛 popover 加「查看全部」入口）
 - **明确不做**：QR 扫码打卡（内网拓扑矛盾）、长连接重构（短连接+failover+spool 已覆盖）、SNMP 端口映射（范围外）。

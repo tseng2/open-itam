@@ -25,7 +25,7 @@
   - `[x]` 资产账面规格字段（CPU/内存/主从硬盘/显卡/网卡MAC）+ Agent 空值回填
   - `[x]` 外寄维修登记（API + 明细抽屉 tab，联动资产状态机）
   - `[x]` 移动存储领用表、配件记录表（模型 + API）
-  - `[ ]` 移动存储领用、配件记录的前端管理页面
+  - `[x]` 移动存储领用、配件记录的前端管理页面（2026-09-26 快赢收官：`/storage-lendings` + `/part-records` 两页挂资产管理组（外派出差终端之后）；顺带修复 storage-lendings PUT 显式 null 清空契约——原阶段一实现"未传"与"显式 null"都归为保持、日期清空静默失败，以原始键集合判定修复并测试锁死；配件为追加式流水无编辑删除面，操作人服务端取 JWT，asset_tag 文本关联）
   - `[x]` 台账 Excel 历史数据导入工具（2026-09-24 随 P1 首项"Excel 批量导入导出"落地，见下方 P1 勾选）
   - `[ ]` 履历附件上传（依赖文件存储体系）
 
@@ -90,5 +90,6 @@
 - [x] **消息中心事件源扩展（阶段五收官：三类运营提醒）**（2026-09-25 完成：① A4 告警联动站内信——webhook 引擎双通道出站（启动即扫一轮），站内信独立于 WebHook 开关，冷却去重复用 webhook_alert_states 同表 notify_overdue/notify_missing 独立键，AlertNotifier 函数注入规避 webhook↔api/v1 循环依赖；② 耗材低库存沿触发——postTxn 旁路，旧库存>预警线且新库存≤线才投（旧库存由新库存-增量回推免加读），持续低位/回补不轰炸，未配预警线不投（与列表 low_stock 口径一致）；③ 许可到期窗口扫描——licensealert 引擎每小时+启动即扫，窗口口径复用 ListLicenses ExpiringDays 单源勿重写，同表 license_expiring 键（asset_id 列存许可 ID）冷却=窗口天数天然只投一次；v1 侧 notifyCompanyAdminsCtx 无 gin 上下文扇出 + NewAlertNotifier/NewLicenseExpiringNotifier 闭包经 main 组装；webhook 引擎 9 项 + licensealert 8 项（覆盖 89.5%）+ v1 扇出/沿触发 3 项 + middleware 4 项测试全绿）
 - [x] **JWT secret 配置化（技术债清偿）**（2026-09-25 完成：server.json jwt_secret + 环境变量 ITAGENT_JWT_SECRET 兜底 + 双缺省回落内置默认并启动告警；SetJWTSecret 启动注入包级 var，GenerateToken/ParseToken/AuthMiddleware 签名零波及，login 自动生效；secret 变更后存量 token 全失效（401→前端跳登录）属预期；middleware 单测 4 项：密钥轮换存量失效/空串忽略/错密 token 401/roundtrip）
 - [x] **阶段五收官 VM 部署实测**（2026-09-25 完成，HEAD `a15c065` 生产 MariaDB：新增 `temp/vm_verify_events.py` 全 PASS——JWT 三查（注入后登录正常/本次启动无回落告警/篡改签名 401；未配置时回落告警日志在案）+ 三类通知落库（asset_alert 2 条：超期未归+疑似失联，WebHook 关闭下照投；license_expiring 1 条：窗口内投、窗口外对照不投、文案带名称与到期日；consumable_low_stock 2 条：沿触发恰好两次）+ 冷却键隔离（notify_* 2 + license_expiring 1 落库，WebHook 通道键 0——独立开关与独立键双证明）+ 管理员未读计数 5 + 二次重启冷却去重跨重启不重复轰炸 + SQL 清理零残留；VM configs/server.json 已注入 jwt_secret；excel/dimension/p2/p2b 四套既有回归零回归 + health 巡检全绿（双容器 healthy、新前端资产生效、3 终端心跳推进、重启后无错误日志））——**阶段五全部收官（消息中心双通道 + 三类事件源 + 安全债清偿）**
+- [x] **快赢双件：阶段一遗留前端清欠 + 独立消息中心页**（2026-09-26 完成：① 移动存储领用页 `/storage-lendings` + 配件出入库页 `/part-records`（模型与 API 阶段一就绪，纯 Web 补页，两 API 写面全员开放前端跟随现状）；**storage-lendings PUT 契约缺陷实测捞出**——原实现"未传"与"显式 null"经指针反序列化无法区分、日期编辑清空静默失败，以原始键集合判定修复（未传=保持、显式 null=清空）并 TDD 契约测试锁死；② 独立消息中心页 `/notifications`（全员菜单，我的门户之后）——四类类型过滤 + 仅看未读开关 + 分页 + 点击就地已读并按 resource 跳转 + 全部已读带受影响数，resource 路由映射抽共享模块 `web/src/notifications.js` 铃铛与页面两处共用，铃铛 popover 加「查看全部」入口）
 
 *(详细设计依据：`temp/同类资产管理系统/CIYO功能地图分析.md` 与 `temp/0924/长期出差终端管理可行性分析.md`，内部工作稿不入库)*
