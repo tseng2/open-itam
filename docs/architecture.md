@@ -468,6 +468,21 @@ sequenceDiagram
 | GET | `/api/v1/notifications/unread-count` | 未读消息计数（铃铛徽标轮询；company_id 可选） |
 | POST | `/api/v1/notifications/{id}/read` | 标记单条已读（幂等；跨用户/不存在 404） |
 | POST | `/api/v1/notifications/read-all` | 全部已读（仅影响本人未读，返回受影响数） |
+| GET/POST | `/api/v1/licenses` | 软件许可列表（P2：company_id 必填 + keyword/expiring_days 到期窗口过滤+分页；登录可读，响应带派生 status 与 used_seats）/ 登记授权（仅 admin） |
+| GET/PUT/DELETE | `/api/v1/licenses/{id}` | 授权详情 / 更新 / 删除（仅 admin；**席位被资产挂接时删除 409 带计数**） |
+| GET/POST | `/api/v1/consumables` | 耗材列表（P2：keyword/low_stock 库存预警过滤+分页，登录可读，带 low_stock 派生标记）/ 新增耗材（仅 admin；**建账库存恒 0**） |
+| PUT/DELETE | `/api/v1/consumables/{id}` | 编辑元数据（名称/规格/单位/预警线；**库存不经编辑面**）/ 删除（仅 admin；**有出入库流水时 409 带计数**） |
+| POST | `/api/v1/consumables/{id}/stock-in` | 入库流水（仅 admin；quantity>0，操作人快照取 JWT；原子加库存） |
+| POST | `/api/v1/consumables/{id}/stock-out` | 出库领用（仅 admin；quantity>0 服务端换算负增量；**击穿零库存 409**） |
+| POST | `/api/v1/consumables/{id}/adjust` | 库存调整（仅 admin；带符号 delta 非零，盘盈盘亏） |
+| GET | `/api/v1/consumables/{id}/txns` | 出入库流水台账（type 过滤+分页，追加式不可变，登录可读） |
+| GET | `/api/v1/portal/summary` | 员工自助门户个人统计四卡（P2：我的设备数/待审批申请/持有天数/30 天内到期归期；JWT 本人收口） |
+| GET | `/api/v1/portal/my-assets` | 我的设备（使用中+维修中，报废不计；带维度富化；传 user_id 无效） |
+| GET | `/api/v1/portal/my-requests` | 我的申请（全部状态；传 applicant_id 无效） |
+| GET | `/api/v1/reports/summary` | 报表汇总 8 卡（P2：总数/在用/库存/维修/报废/列管计数 + 在册口径原值/净值合计；**仅 admin**） |
+| GET | `/api/v1/reports/annual-value` | 年度资产价值（years 窗口默认 6；近 N 年购入聚合，空年零填充，在册口径） |
+| GET | `/api/v1/reports/monthly-trend` | 月度建账趋势（months 窗口默认 12；空月零填充，建账口径含报废） |
+| GET | `/api/v1/reports/distribution` | 资产分布环图（dimension=status 默认 / category；label+count+percent，计数降序） |
 
 **免登录公开面（阶段五 P0-β 移动扫码，无 JWT）：**
 
@@ -502,6 +517,14 @@ sequenceDiagram
 **操作日志契约（P2 体验运营首项）**：`operation_logs` 追加式审计表（`company_id`（0=全局面操作）/ `user_id` + `username`/`role` 操作人快照 / `action` / `resource` / `resource_id` / `path` 原始路径兜底 / `detail` 请求体摘要 / `ip` / `user_agent` / `status` HTTP 状态码 / `created_at`）——**不挂 BaseModel 软删除语义，不提供任何修改/删除面（审计流水不可变）**。**写入有两条路径**：① gin 审计中间件 `middleware.AuditLog`（挂在 AuthMiddleware 之后、全部受保护路由）对变更类方法（POST/PUT/DELETE/PATCH）在业务完成后留痕——操作人取 JWT 上下文；**动作/对象派生规则**（`ParseAuditRequest` 纯函数）：路径尾段为数字 → 方法缺省动作（POST=create / PUT=update / DELETE=delete），尾段非数字 → 尾段即动作词（`/dispatches/5/return` → `return`、`/assets/import` → `import`），动作段前一段为数字即对象 ID；多级子资源的 ID 语义歧义以 `path` 原文兜底。② 登录是公开面不经中间件，在登录处理器内单独留痕：成功记 `login`（操作人取用户表）、失败（密码错/被禁用/未设密码）记 `login_failed`（能定位到用户则带身份，查无此人 user_id/company_id 记 0）。**公司归属**：query `company_id` 优先、JSON body `company_id` 兜底、皆无记 0（全局配置类操作）。**请求体采集防护**：仅 Content-Length 明确且 ≤64KB 的 JSON 报文预读（读后复位，业务 handler 无感），明细截断 2048 字节；multipart（Excel 导入等）与超限/分块未知长度报文一律不动流、明细留空——审计绝不改变业务行为。**审计旁路语义**：落库失败只经 `c.Error` 上报 gin 错误链，绝不阻塞业务响应；越权失败尝试（403）同样留痕（安全审计信号）。**时间口径**：审计 `created_at` 与过滤参数统一 UTC（glebarez SQLite 按带时区偏移的文本存取时间，写入本地/查询 UTC 会让 SQL 文本比较错位；MariaDB 驱动统一转换无此问题，但双实现必须同一口径）；列宽防御在 store 边界截断超宽字段（MariaDB 严格模式会因超宽丢弃整条审计）。**查询面**：`GET /api/v1/operation-logs` 仅 admin（RoleMiddleware），company_id 0/缺省 = 全部（含全局行）；无 retention 清理策略（表量级=管理操作频次，暂不构成风险，后续报表中心再评估归档）。
 
 **消息中心契约（P2 体验运营第二项：站内信起步）**：`notifications` 表（`company_id` / `user_id` 收件人 / `type` 通知类型 / `title` / `content` / `resource` + `resource_id` 跳转锚点 / `read_at` NULL=未读）。**收件箱安全边界是 user_id**（JWT 本人收口，传参无效；company_id 可选，0 = 不限公司——顶栏铃铛无公司上下文，跨公司用户自己的通知全可见）。**已读语义**：新增通知一律未读（store 归一 ReadAt=nil，已读态只能经标记动作产生）；单条已读幂等（重复标记放行——铃铛轮询与点击天然并发）；全部已读返回受影响数；跨用户/不存在一律 404。**事件源接线是业务旁路**（沿审计旁路先例）：通知投递失败只经 `c.Error` 上报 gin 错误链，绝不阻塞业务主流程；首个事件源为设备申请审批流——提交 → 扇出通知公司全部在册管理员（admin + super_admin，`notifyCompanyAdmins`），通过/驳回 → 回执申请人（文案带资产编码，富化查询失败回落"资产 #ID"，通知不因文案富化失败而丢失）。A4 Webhook 是消息中心的出站通道（推送外部系统），与站内信正交互补；后续事件源（盘点异常/告警升级/折旧完成）按场景接入。**Web 端**：顶栏铃铛（未读徽标 30s 轮询同预警节奏，max 99）+ popover 收件箱（最近 20 条，点击就地已读并按 resource 跳转对应页面，全部已读按钮）；独立消息中心页面留待报表中心阶段一并规划。
+
+**软件许可契约（P2 体验运营，CIYO 对标）**：`licenses` 表（`company_id` / `name` 软件名称 / `vendor` 厂商 / `category` 分类 / `license_key` 授权密钥 / `total_seats` 席位总数（0=不限）/ `purchase_date` / `expiration_date` 到期日（NULL=永久授权）/ `termination_date` 合同终止日 / `remark`）。**状态不落库**——由日期经 `model.ResolveLicenseStatus` 实时派生（与外派"超期是计算属性"同口径）：终止日非空优先（合同终止盖过一切）→ 到期日已过 → 在用；改日期即改状态，杜绝脏数据。**已用席位也不落库**——席位分配经 `assets.license_id` 强类型外键挂接到具体资产，used_seats 由 API 层一次 GROUP BY 实时计数，**被压缩席位数造成的历史超用不做追溯修正**，由许可页合规度视图呈现（used > total 标红）。**挂接语义与维度外键一致**：建账传 null/0 不占席位、编辑传 0 解除挂接；挂接校验存在+同公司（404），**席位已满 409**（total_seats>0 且当前占用 ≥ 总数；编辑换绑同一许可时排除自身）。**删除拦截在 API 层**：席位仍被资产挂接的许可删除 409 带引用数（维度同款）。**到期提醒窗口**：`expiring_days=N` 只看「到期日在 (now, now+N] 且未终止」的许可（永久授权不进窗口），时间参数 UTC 归一（P2-1 已知坑）。许可不参与 Excel 导入导出（台账 Excel 仍走自由文本建账）。**Web 端**：软件与授权许可页（原 mock 页实装）——席位占用进度条（满员黄/超用红）、密钥脱敏展示、到期窗口过滤；资产表单新增许可下拉（带已用/总数），详情抽屉显示许可名。
+
+**耗材管理契约（P2 体验运营，CIYO 对标）**：`consumables` 表（`company_id` / `name` / `spec` 规格型号 / `unit` 计量单位 / `stock` 当前库存 / `min_quantity` 最低库存预警线（0=不预警）/ `remark`）+ `consumable_txns` 流水表（`consumable_id` / `type`（stock_in/stock_out/adjust）/ `delta` 带符号变动量 / `recipient` 领用人 / `operator_id` + `operator_name` 操作人快照 / `remark` / `created_at`）。**库存只经流水变更**：编辑面 Select 列表不含 stock 列，建账库存恒 0——期初库存走第一笔入库流水，每笔库存变动都有流水对应（账实可追溯）；流水**追加式不可变**（不挂 BaseModel 软删除，无修改/删除面——operation_logs 先例）。**符号语义**：入库恒正、出库恒负（API 接收正数量、服务端换算负增量落库）、调整任意非零（盘盈正/盘亏负），库存恒为「加增量」单一口径。**原子扣减**：`CreateConsumableTxn` 单事务内条件更新 `stock + delta >= 0`，零命中时区分耗材不存在（404，含跨公司）与库存不足（`ErrInsufficient` → 409），并发超卖由条件更新天然拦截、流水不落半截。**名称同公司唯一**（store 层校验，软删不占名可重建，维表同口径）。**预警派生**：low_stock = min_quantity > 0 且 stock ≤ min_quantity（未配预警线的零库存不算预警），列表过滤与响应标记同口径。**删除拦截在 API 层**：有出入库流水的耗材删除 409 带流水计数。审计联动：stock-in/stock-out/adjust 由审计中间件按 URL 尾段自动留痕动作。**Web 端**：耗材管理页（资产管理组）——预警行红色标记、出/入/调整对话框、流水抽屉（带领用人/操作人快照）。
+
+**员工自助门户契约（P2 体验运营，CIYO PersonalStatsVO 对标）**：`GET /api/v1/portal/*` 三个只读端点，**全部 JWT 本人收口**（user_id 即安全边界，notifications 先例；传 user_id/applicant_id 一律无效，无公司上下文）。**统计四卡口径**：`device_count` = user_id=本人 且 status∈{20 在用, 30 维修中}（报废不计——维修设备仍归属领用人）；`pending_request_count` = 本人的待审批申请数；`days_in_use` = 本人在册设备最早一次 `assign` 履历距今整日数（无履历记 0——用模型查询而非 MIN 聚合，glebarez 对 MIN() 返回原始字符串、Raw+NullTime 扫描会炸，模型字段的 schema 转换器才能解析时间文本）；`expiring_count` = 已批短期借用中归期落在 (now, now+30d] 的申请数（归还提醒）。**我的设备**带维度富化（license_name/supplier_name 同台账口径）。Web 端：我的门户页（全员可见菜单）——四卡 + 我的设备表 + 我的申请表（跳设备申请页提交新申请）。
+
+**报表中心契约（P2 体验运营，CIYO 对标）**：`GET /api/v1/reports/*` 四个只读端点，**整组 admin-only**（RoleMiddleware 收口在路由组，管理视角数据不下发普通用户）。**口径单源**（`api/v1/report.go` 纯函数 + 一次轻量列拉取后 Go 侧聚合——DB 侧 DATE_FORMAT 是方言，双库不可移植）：① 汇总 8 卡——状态计数为**台账全量口径**（含报废），价值合计与年度价值为**在册口径**（非报废，报废残值出表），列管 = off_book 且未报废（P0-β 正交契约）；② 年度资产价值——近 N 年（默认 6）购入聚合 `{year, count, original, net}`，窗口年降序、空年零填充、窗口外样本丢弃（历史归档口径）；③ 月度建账趋势——近 N 月（默认 12）新建台账数，**建账口径含报废**（反映录入节奏），空月零填充升序，月界按自然月切分；④ 分布环图——dimension=status（标签收口 `model.AssetStatusName`，事实唯一源）/ category（复用 AssetCategoryName），行 `{label, count, percent}` 计数降序（同数按标签字典序稳定），percent 四舍五入整数、总数为零返回空（除零防御）。窗口参数缺省/非法/超大一律收敛到边界（1≤years≤20、1≤months≤36）。**Web 端**：报表中心页——8 卡网格、年度价值双色条（原值蓝/净值绿）、月度趋势 CSS 柱状、SVG 环图（stroke-dasharray 分段）+ 图例，公司维度切换。
 
 ---
 
