@@ -345,6 +345,9 @@
           <el-descriptions-item label="折旧规则">
             {{ depreciationRuleName(currentAsset.depreciation_id) }}
           </el-descriptions-item>
+          <el-descriptions-item label="软件许可">
+            {{ currentAsset.license_name || '未占用席位' }}
+          </el-descriptions-item>
           <el-descriptions-item label="财务维度">
             <el-tag v-if="currentAsset.off_book" type="warning" size="small">
               列管（已销账{{ formatDate(currentAsset.off_book_at) ? ' ' + formatDate(currentAsset.off_book_at) : '' }}）
@@ -709,6 +712,25 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
+            <el-form-item label="软件许可">
+              <el-select
+                v-model="form.license_id"
+                clearable
+                filterable
+                placeholder="不占用软件席位"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="l in licenses"
+                  :key="l.id"
+                  :label="`${l.name}${l.total_seats ? `（${l.used_seats}/${l.total_seats} 席）` : '（不限席位）'}`"
+                  :value="l.id"
+                />
+              </el-select>
+              <div class="form-tip">席位已满的许可无法再挂接资产（服务端 409 拦截）</div>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
             <el-form-item label="供应商">
               <el-select
                 v-model="form.supplier_id"
@@ -1049,6 +1071,8 @@ const form = reactive({
   original_price: 0,
   net_value: 0,
   depreciation_id: '',
+  // 软件许可（P2）：'' = 不占席位，选项来自软件许可授权池
+  license_id: '',
   // 维度治理外键（P1）：'' = 不挂接（建账 null / 编辑 0），选项来自基础数据维表
   manufacturer_id: '',
   model_id: '',
@@ -1252,6 +1276,7 @@ function resetForm() {
     original_price: 0,
     net_value: 0,
     depreciation_id: '',
+    license_id: '',
     manufacturer_id: '',
     model_id: '',
     supplier_id: '',
@@ -1300,6 +1325,7 @@ function openEditDialog() {
     original_price: a.original_price || 0,
     net_value: a.net_value || 0,
     depreciation_id: a.depreciation_id || '',
+    license_id: a.license_id || '',
     manufacturer_id: a.manufacturer_id || '',
     model_id: a.model_id || '',
     supplier_id: a.supplier_id || '',
@@ -1665,6 +1691,26 @@ async function fetchDepreciationRules(companyID) {
   }
 }
 
+// 软件许可下拉（P2）：按公司缓存（席位使用数随列表富化返回），与折旧规则下拉同款模式
+const licenses = ref([])
+let licensesCompanyID = 0
+
+async function fetchLicenses(companyID) {
+  if (!companyID) {
+    licenses.value = []
+    licensesCompanyID = 0
+    return
+  }
+  if (licensesCompanyID === companyID) return
+  try {
+    const res = await api(`/api/v1/licenses?company_id=${companyID}&page_size=200`)
+    licenses.value = res.data?.items || []
+    licensesCompanyID = companyID
+  } catch (err) {
+    console.error('failed to fetch licenses', err)
+  }
+}
+
 function depreciationRuleName(ruleID) {
   if (!ruleID) return '未挂接（净值手工维护）'
   const r = depreciationRules.value.find(item => item.id === ruleID)
@@ -1674,6 +1720,7 @@ function depreciationRuleName(ruleID) {
 // 表单公司切换即换规则与维度下拉（均为公司维度实体）
 watch(() => form.company_id, (id) => {
   fetchDepreciationRules(id)
+  fetchLicenses(id)
   fetchDimensionOptions(id)
 })
 
@@ -1876,6 +1923,7 @@ async function submitCreate() {
         category_name: categoryNames[form.category_id] || '',
         // 建账空值 → null（不挂接）；编辑空值 → 0（解除挂接），后端按语义区分
         depreciation_id: editMode.value ? (form.depreciation_id || 0) : (form.depreciation_id || null),
+        license_id: dimensionValue(form.license_id),
         manufacturer_id: dimensionValue(form.manufacturer_id),
         model_id: dimensionValue(form.model_id),
         supplier_id: dimensionValue(form.supplier_id),
