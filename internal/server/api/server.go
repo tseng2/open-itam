@@ -114,6 +114,10 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.Handle("/api/v1/locations/", ginEngine)
 	h.mux.Handle("/api/v1/asset-models", ginEngine)
 	h.mux.Handle("/api/v1/asset-models/", ginEngine)
+	// 操作日志（P2 体验运营）：admin 只读审计面；写入由审计中间件与
+	// 登录处理器完成。外层 mux 挂载两行不可漏（A1 的 404 教训）
+	h.mux.Handle("/api/v1/operation-logs", ginEngine)
+	h.mux.Handle("/api/v1/operation-logs/", ginEngine)
 
 	return h
 }

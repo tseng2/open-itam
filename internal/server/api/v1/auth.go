@@ -18,6 +18,30 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+// auditLoginEvent 登录事件留痕（P2 操作日志）：公开认证面不经审计中间件，
+// 在此单独落库。成功记 login，失败记 login_failed；查无此人时
+// user_id/company_id 记 0。留痕失败不阻塞登录流程（沿审计旁路先例）
+func auditLoginEvent(c *gin.Context, user *model.User, attemptName, action string, status int) {
+	log := model.OperationLog{
+		Username:  attemptName,
+		Action:    action,
+		Resource:  "auth",
+		Path:      "/api/v1/auth/login",
+		IP:        c.ClientIP(),
+		UserAgent: c.Request.UserAgent(),
+		Status:    status,
+	}
+	if user != nil {
+		log.CompanyID = user.CompanyID
+		log.UserID = user.ID
+		log.Username = user.Username
+		log.Role = user.Role
+	}
+	if err := store.NewGormStore(store.DB).CreateOperationLog(c.Request.Context(), log); err != nil {
+		_ = c.Error(err)
+	}
+}
+
 func RegisterAuthRoutes(r *gin.RouterGroup) {
 	auth := r.Group("/auth")
 	{
@@ -61,6 +85,7 @@ func handleLogin(c *gin.Context) {
 				}
 				store.DB.Create(&user)
 			} else {
+				auditLoginEvent(c, nil, req.Username, model.OperationActionLoginFailed, http.StatusUnauthorized)
 				c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "invalid username or password"})
 				return
 			}
@@ -80,17 +105,20 @@ func handleLogin(c *gin.Context) {
 			user.RealName = "系统超级管理员"
 			store.DB.Save(&user)
 		} else {
+			auditLoginEvent(c, &user, req.Username, model.OperationActionLoginFailed, http.StatusUnauthorized)
 			c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "该账号尚未设置登录密码，请联系管理员"})
 			return
 		}
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		auditLoginEvent(c, &user, req.Username, model.OperationActionLoginFailed, http.StatusUnauthorized)
 		c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "invalid username or password"})
 		return
 	}
 
 	if user.Status != "active" {
+		auditLoginEvent(c, &user, req.Username, model.OperationActionLoginFailed, http.StatusForbidden)
 		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "account is disabled"})
 		return
 	}
@@ -101,6 +129,8 @@ func handleLogin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to generate token"})
 		return
 	}
+
+	auditLoginEvent(c, &user, req.Username, model.OperationActionLogin, http.StatusOK)
 
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,

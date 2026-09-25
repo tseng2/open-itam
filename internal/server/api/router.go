@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"itagent/internal/server/api/middleware"
+	"itagent/internal/server/store"
 	v1 "itagent/internal/server/api/v1"
 	"github.com/gin-gonic/gin"
 )
@@ -26,6 +27,9 @@ func SetupRouter(offlineThreshold time.Duration) *gin.Engine {
 		// 需要登录认证的路由
 		protected := apiV1.Group("/")
 		protected.Use(middleware.AuthMiddleware())
+		// P2 操作日志：认证之后统一审计变更类请求（POST/PUT/DELETE），
+		// 落库失败只走 gin 错误链，绝不阻塞业务响应
+		protected.Use(middleware.AuditLog(store.NewGormStore(store.DB)))
 		{
 			v1.RegisterCompanyRoutes(protected)
 			v1.RegisterAssetRoutes(protected, offlineThreshold)
@@ -40,6 +44,7 @@ func SetupRouter(offlineThreshold time.Duration) *gin.Engine {
 			v1.RegisterAssetRequestRoutes(protected)
 			v1.RegisterDepreciationRoutes(protected)
 			v1.RegisterDimensionRoutes(protected)
+			v1.RegisterOperationLogRoutes(protected)
 		}
 	}
 
