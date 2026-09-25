@@ -166,6 +166,15 @@ func (h *AssetRequestHandler) Create(c *gin.Context) {
 		Fail(c, http.StatusInternalServerError, 50002, "提交申请失败")
 		return
 	}
+	// 站内信：提醒公司管理员有待审批（旁路，失败不阻塞申请提交）
+	notifyCompanyAdmins(c, model.Notification{
+		CompanyID:  req.CompanyID,
+		Type:       model.NotificationTypeAssetRequest,
+		Title:      "新设备申请待审批",
+		Content:    fmt.Sprintf("%s 申请领用 %s，事由：%s", applicantName, asset.AssetTag, req.Reason),
+		Resource:   "asset-requests",
+		ResourceID: strconv.FormatInt(created.ID, 10),
+	})
 	Success(c, created)
 }
 
@@ -227,6 +236,16 @@ func (h *AssetRequestHandler) Reject(c *gin.Context) {
 		failAssetRequestStoreError(c, err)
 		return
 	}
+	// 站内信：驳回结果回执给申请人（旁路，失败不阻塞驳回）
+	pushNotification(c, model.Notification{
+		CompanyID:  r.CompanyID,
+		UserID:     r.ApplicantID,
+		Type:       model.NotificationTypeAssetRequest,
+		Title:      "设备申请已驳回",
+		Content:    fmt.Sprintf("你申请领用的 %s 被驳回，批注：%s", assetTagForNotify(c, r.AssetID), emptyAs(req.DecisionRemark, "无")),
+		Resource:   "asset-requests",
+		ResourceID: strconv.FormatInt(r.ID, 10),
+	})
 	Success(c, r)
 }
 
@@ -311,6 +330,16 @@ func (h *AssetRequestHandler) Approve(c *gin.Context) {
 		failAssetRequestStoreError(c, err)
 		return
 	}
+	// 站内信：通过结果回执给申请人（旁路，失败不阻塞审批生效）
+	pushNotification(c, model.Notification{
+		CompanyID:  r.CompanyID,
+		UserID:     r.ApplicantID,
+		Type:       model.NotificationTypeAssetRequest,
+		Title:      "设备申请已通过",
+		Content:    fmt.Sprintf("你申请领用的 %s 已审批通过，批注：%s", assetTagForNotify(c, r.AssetID), emptyAs(req.DecisionRemark, "无")),
+		Resource:   "asset-requests",
+		ResourceID: strconv.FormatInt(r.ID, 10),
+	})
 	Success(c, updated)
 }
 

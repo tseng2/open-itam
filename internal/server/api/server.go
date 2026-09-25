@@ -118,6 +118,9 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 登录处理器完成。外层 mux 挂载两行不可漏（A1 的 404 教训）
 	h.mux.Handle("/api/v1/operation-logs", ginEngine)
 	h.mux.Handle("/api/v1/operation-logs/", ginEngine)
+	// 消息中心起步（P2 体验运营）：站内信个人收件箱（JWT 本人收口）
+	h.mux.Handle("/api/v1/notifications", ginEngine)
+	h.mux.Handle("/api/v1/notifications/", ginEngine)
 
 	return h
 }
