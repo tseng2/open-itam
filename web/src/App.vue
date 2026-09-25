@@ -95,6 +95,12 @@
           <span>用户与权限 (RBAC)</span>
         </el-menu-item>
 
+        <!-- P2 操作日志：admin 只读审计面（服务端 RBAC 收口，菜单不区分角色） -->
+        <el-menu-item index="/operation-logs">
+          <el-icon><Memo /></el-icon>
+          <span>操作日志 (审计)</span>
+        </el-menu-item>
+
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
           <span>系统与 U8 集成</span>
@@ -167,6 +173,7 @@ const currentRouteTitle = computed(() => {
     '/changes': '硬件变更与预警中心',
     '/organization': '组织架构与人员',
     '/users': '系统用户与权限 (RBAC)',
+    '/operation-logs': '操作日志审计',
     '/software': '软件资产与授权',
     '/settings': '系统与集成设置',
   }
