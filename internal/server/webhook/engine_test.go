@@ -67,7 +67,7 @@ func setupEngine(t *testing.T) (*Engine, *store.GormStore, time.Time) {
 	})
 	st := store.NewGormStore(db)
 	base := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
-	engine := NewEngine(db, st, 15*time.Minute)
+	engine := NewEngine(db, st, 15*time.Minute, nil)
 	engine.now = func() time.Time { return base }
 	return engine, st, base
 }
