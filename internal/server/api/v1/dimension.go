@@ -840,6 +840,16 @@ func enrichAssetsDimensions(ctx context.Context, items []model.Asset) error {
 			supplierNames[s.ID] = s.Name
 		}
 	}
+	licenseNames := map[int64]string{}
+	if ids := collect(func(a model.Asset) *int64 { return a.LicenseID }); len(ids) > 0 {
+		var rows []model.License
+		if err := store.DB.WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
+			return fmt.Errorf("query licenses: %w", err)
+		}
+		for _, l := range rows {
+			licenseNames[l.ID] = l.Name
+		}
+	}
 
 	for i := range items {
 		if items[i].ManufacturerID != nil {
@@ -859,6 +869,9 @@ func enrichAssetsDimensions(ctx context.Context, items []model.Asset) error {
 		}
 		if items[i].SupplierID != nil {
 			items[i].SupplierName = supplierNames[*items[i].SupplierID]
+		}
+		if items[i].LicenseID != nil {
+			items[i].LicenseName = licenseNames[*items[i].LicenseID]
 		}
 	}
 	return nil

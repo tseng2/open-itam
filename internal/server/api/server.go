@@ -121,6 +121,18 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 消息中心起步（P2 体验运营）：站内信个人收件箱（JWT 本人收口）
 	h.mux.Handle("/api/v1/notifications", ginEngine)
 	h.mux.Handle("/api/v1/notifications/", ginEngine)
+	// 软件许可（P2 体验运营）：授权池管理面，读面登录可访问 + 写面 admin
+	h.mux.Handle("/api/v1/licenses", ginEngine)
+	h.mux.Handle("/api/v1/licenses/", ginEngine)
+	// 耗材管理（P2 体验运营）：库存物料 + 出入库流水，读面登录可访问 + 写面 admin
+	h.mux.Handle("/api/v1/consumables", ginEngine)
+	h.mux.Handle("/api/v1/consumables/", ginEngine)
+	// 员工自助门户（P2 体验运营）：个人视角聚合面，JWT 本人收口，全员可读
+	h.mux.Handle("/api/v1/portal", ginEngine)
+	h.mux.Handle("/api/v1/portal/", ginEngine)
+	// 报表中心（P2 体验运营）：管理视角聚合面，仅 admin
+	h.mux.Handle("/api/v1/reports", ginEngine)
+	h.mux.Handle("/api/v1/reports/", ginEngine)
 
 	return h
 }

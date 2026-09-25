@@ -80,8 +80,9 @@ type ListAssetQuery struct {
 	ModelID         int64 `form:"model_id"`
 	SupplierID      int64 `form:"supplier_id"`
 	LocationID      int64 `form:"location_id"`
-	Page      int    `form:"page,default=1"`
-	PageSize  int    `form:"page_size,default=20"`
+	LicenseID      int64 `form:"license_id"` // 软件许可筛选（P2）
+	Page      int `form:"page,default=1"`
+	PageSize  int `form:"page_size,default=20"`
 }
 
 // applyAssetListFilter 台账列表与 Excel 导出共用的查询过滤（导出忽略分页参数）。
@@ -111,6 +112,9 @@ func applyAssetListFilter(db *gorm.DB, query ListAssetQuery) *gorm.DB {
 	}
 	if query.LocationID > 0 {
 		db = db.Where("location_id = ?", query.LocationID)
+	}
+	if query.LicenseID > 0 {
+		db = db.Where("license_id = ?", query.LicenseID)
 	}
 	if query.AssetTag != "" {
 		db = db.Where("asset_tag LIKE ?", "%"+query.AssetTag+"%")
@@ -240,6 +244,10 @@ type CreateAssetRequest struct {
 	ModelID        *int64 `json:"model_id"`
 	SupplierID     *int64 `json:"supplier_id"`
 	LocationID     *int64 `json:"location_id"`
+
+	// 软件许可挂接（P2）：null/0 = 不占席位；挂接时校验存在+同公司，
+	// 席位超用 409（口径见 license.go validateAssetLicenseRef）
+	LicenseID *int64 `json:"license_id"`
 }
 
 func (h *AssetHandler) Create(c *gin.Context) {
@@ -262,6 +270,14 @@ func (h *AssetHandler) Create(c *gin.Context) {
 		req.ManufacturerID, req.ModelID, req.SupplierID, req.LocationID)
 	if !ok {
 		return
+	}
+	// 软件许可挂接校验（P2）：存在+同公司+席位余量，失败即终止
+	var license *model.License
+	if req.LicenseID != nil && *req.LicenseID > 0 {
+		license, ok = validateAssetLicenseRef(c, req.CompanyID, *req.LicenseID, 0)
+		if !ok {
+			return
+		}
 	}
 
 	asset := model.Asset{
@@ -297,6 +313,10 @@ func (h *AssetHandler) Create(c *gin.Context) {
 	}
 	// 维度挂接落地（P1）：外键 + 快照写回 + 折旧规则继承
 	applyAssetDimensionLinks(&asset, links, req.DepreciationID)
+	// 软件许可席位挂接（P2）
+	if license != nil {
+		asset.LicenseID = &license.ID
+	}
 
 	if err := store.DB.Create(&asset).Error; err != nil {
 		Fail(c, http.StatusInternalServerError, 50002, "failed to create asset: "+err.Error())
@@ -384,6 +404,10 @@ type UpdateAssetRequest struct {
 	ModelID        *int64 `json:"model_id"`
 	SupplierID     *int64 `json:"supplier_id"`
 	LocationID     *int64 `json:"location_id"`
+
+	// 软件许可挂接（P2）：nil 不动；>0 挂接（校验席位余量，换绑同一
+	// 许可时排除自身席位）；0 解除挂接
+	LicenseID *int64 `json:"license_id"`
 }
 
 func (h *AssetHandler) Update(c *gin.Context) {
@@ -470,6 +494,18 @@ func (h *AssetHandler) Update(c *gin.Context) {
 	// 合法，宁可不改也不留悬空外键）
 	if !applyAssetDimensionUpdates(c, &asset, &req, updates) {
 		return
+	}
+	// 软件许可挂接（P2）：>0 校验席位余量后挂接；0 解除挂接
+	if req.LicenseID != nil {
+		if *req.LicenseID > 0 {
+			l, ok := validateAssetLicenseRef(c, asset.CompanyID, *req.LicenseID, asset.ID)
+			if !ok {
+				return
+			}
+			updates["license_id"] = l.ID
+		} else {
+			updates["license_id"] = nil
+		}
 	}
 
 	if len(updates) == 0 {
