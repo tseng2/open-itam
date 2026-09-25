@@ -14,6 +14,7 @@ var (
 	ErrUnauthorized  = errors.New("invalid credentials")
 	ErrAlreadyExists = errors.New("record already exists")
 	ErrInvalidState  = errors.New("invalid state transition")
+	ErrInsufficient  = errors.New("insufficient stock")
 )
 
 // DispatchListFilter 外派登记列表查询条件；Overdue 三态：
@@ -156,6 +157,25 @@ type Store interface {
 	CountUnreadNotifications(ctx context.Context, companyID, userID int64) (int64, error)
 	MarkNotificationRead(ctx context.Context, companyID, userID, id int64, readAt time.Time) error
 	MarkAllNotificationsRead(ctx context.Context, companyID, userID int64, readAt time.Time) (int64, error)
+	// 软件许可（P2 体验运营）：授权池 CRUD。状态与已用席位不落库——
+	// 状态由日期派生（model.ResolveLicenseStatus），席位由资产挂接计数；
+	// 许可被资产挂接时的删除拦截在 API 层（需查 assets 表，
+	// SQLiteStore 测试库无该表），store 只管许可表本身
+	CreateLicense(ctx context.Context, l model.License) (model.License, error)
+	ListLicenses(ctx context.Context, f LicenseListFilter) ([]model.License, int64, error)
+	GetLicense(ctx context.Context, companyID, id int64) (model.License, error)
+	UpdateLicense(ctx context.Context, l model.License) (model.License, error)
+	DeleteLicense(ctx context.Context, companyID, id int64) error
+	// 耗材管理（P2 体验运营）：库存物料 CRUD + 追加式出入库流水。
+	// 库存只经 CreateConsumableTxn 变更（条件更新原子扣减，出库不得
+	// 击穿零库存）；建账库存恒 0，期初库存走第一笔入库流水；
+	// 有流水的耗材删除拦截在 API 层（引用计数），store 只管表本身
+	CreateConsumable(ctx context.Context, c model.Consumable) (model.Consumable, error)
+	ListConsumables(ctx context.Context, f ConsumableListFilter) ([]model.Consumable, int64, error)
+	UpdateConsumable(ctx context.Context, c model.Consumable) (model.Consumable, error)
+	DeleteConsumable(ctx context.Context, companyID, id int64) error
+	CreateConsumableTxn(ctx context.Context, txn model.ConsumableTxn) (model.ConsumableTxn, model.Consumable, error)
+	ListConsumableTxns(ctx context.Context, f ConsumableTxnListFilter) ([]model.ConsumableTxn, int64, error)
 	Close() error
 }
 
@@ -236,4 +256,35 @@ type NotificationListFilter struct {
 	Type      string
 	Page      int
 	PageSize  int
+}
+
+// LicenseListFilter 软件许可列表查询条件：Keyword 模糊匹配名称/厂商；
+// ExpiringDays > 0 只看"N 天内到期且未终止"的许可（到期提醒场景），
+// 窗口语义为 (now, now+N] 且 termination_date IS NULL
+type LicenseListFilter struct {
+	CompanyID    int64
+	Keyword      string
+	ExpiringDays int
+	Page         int
+	PageSize     int
+}
+
+// ConsumableListFilter 耗材列表查询条件：Keyword 模糊匹配名称/规格；
+// LowStock nil 不过滤；true 仅库存预警（min_quantity > 0 且 stock <= min_quantity）
+type ConsumableListFilter struct {
+	CompanyID int64
+	Keyword   string
+	LowStock  *bool
+	Page      int
+	PageSize  int
+}
+
+// ConsumableTxnListFilter 出入库流水查询条件：ConsumableID 0 = 该公司
+// 全部耗材流水；Type 空值不过滤（流水账 Newest-first）
+type ConsumableTxnListFilter struct {
+	CompanyID    int64
+	ConsumableID int64
+	Type         string
+	Page         int
+	PageSize     int
 }

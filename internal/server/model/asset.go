@@ -33,6 +33,17 @@ var assetCategoryNames = map[int64]string{
 // AssetCategoryName 类别 ID → 规范中文名；未知 ID 原样返回空串
 func AssetCategoryName(id int64) string { return assetCategoryNames[id] }
 
+// assetStatusNames 状态 → 规范中文名（报表中心分布环图与前端展示共口）
+var assetStatusNames = map[int]string{
+	AssetStatusStock:    "库存中",
+	AssetStatusInUse:    "使用中",
+	AssetStatusRepair:   "维修中",
+	AssetStatusScrapped: "已报废",
+}
+
+// AssetStatusName 状态 → 规范中文名；未知状态返回空串
+func AssetStatusName(id int) string { return assetStatusNames[id] }
+
 // assetCategoryAliases 中文名/常见别名 → 类别 ID（Excel 导入容错，键统一小写）
 var assetCategoryAliases = map[string]int64{
 	"台式整机":  AssetCategoryPC,
@@ -113,9 +124,16 @@ type Asset struct {
 	SupplierID      *int64 `gorm:"index" json:"supplier_id"`      // 供应商（suppliers）
 	LocationID      *int64 `gorm:"index" json:"location_id"`      // 位置（locations）
 
+	// 软件许可挂接（P2）：席位分配到具体资产（assets.license_id），
+	// 许可的已用席位即由此计数；为空表示未占用任何许可席位
+	LicenseID *int64 `gorm:"index" json:"license_id"`
+
 	// 供应商富化展示（API 层批量填充，不落库；其余三个维度直接复用
 	// Brand / ModelName / Location 快照列承载富化值，前端零改动）
 	SupplierName string `gorm:"-" json:"supplier_name,omitempty"`
+
+	// 软件许可富化展示（API 层批量填充，不落库）
+	LicenseName string `gorm:"-" json:"license_name,omitempty"`
 
 	// 财务维度（列管资产支持，P0-β）：off_book 与运营状态正交——
 	// 折旧完且财务销账的资产转为"列管"继续给员工使用，报废变卖才离场。

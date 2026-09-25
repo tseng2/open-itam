@@ -305,6 +305,60 @@ CREATE INDEX IF NOT EXISTS idx_notifications_company ON notifications(company_id
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications(type);
 CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read_at);
+
+CREATE TABLE IF NOT EXISTS licenses (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id       INTEGER NOT NULL,
+    name             TEXT NOT NULL,
+    vendor           TEXT NOT NULL DEFAULT '',
+    category         TEXT NOT NULL DEFAULT '',
+    license_key      TEXT NOT NULL DEFAULT '',
+    total_seats      INTEGER NOT NULL DEFAULT 0,
+    purchase_date    DATETIME,
+    expiration_date  DATETIME,
+    termination_date DATETIME,
+    remark           TEXT NOT NULL DEFAULT '',
+    created_at       DATETIME NOT NULL,
+    updated_at       DATETIME NOT NULL,
+    deleted_at       DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_licenses_company ON licenses(company_id);
+CREATE INDEX IF NOT EXISTS idx_licenses_expiration ON licenses(expiration_date);
+
+CREATE TABLE IF NOT EXISTS consumables (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id   INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    spec         TEXT NOT NULL DEFAULT '',
+    unit         TEXT NOT NULL DEFAULT '',
+    stock        INTEGER NOT NULL DEFAULT 0,
+    min_quantity INTEGER NOT NULL DEFAULT 0,
+    remark       TEXT NOT NULL DEFAULT '',
+    created_at   DATETIME NOT NULL,
+    updated_at   DATETIME NOT NULL,
+    deleted_at   DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_consumables_company ON consumables(company_id);
+
+-- 流水追加式不可变：无 updated_at/软删除（operation_logs 先例）
+CREATE TABLE IF NOT EXISTS consumable_txns (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id    INTEGER NOT NULL,
+    consumable_id INTEGER NOT NULL,
+    type          TEXT NOT NULL,
+    delta         INTEGER NOT NULL,
+    recipient     TEXT NOT NULL DEFAULT '',
+    operator_id   INTEGER NOT NULL DEFAULT 0,
+    operator_name TEXT NOT NULL,
+    remark        TEXT NOT NULL DEFAULT '',
+    created_at    DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_consumable_txns_company ON consumable_txns(company_id);
+CREATE INDEX IF NOT EXISTS idx_consumable_txns_consumable ON consumable_txns(consumable_id);
+CREATE INDEX IF NOT EXISTS idx_consumable_txns_type ON consumable_txns(type);
 `
 
 type SQLiteStore struct {
@@ -2389,4 +2443,371 @@ func (s *SQLiteStore) MarkAllNotificationsRead(ctx context.Context, companyID, u
 		return 0, fmt.Errorf("mark all notifications read: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+// ---- 软件许可（P2 体验运营）----
+
+const licenseColumns = `id, company_id, name, vendor, category, license_key, total_seats,
+	purchase_date, expiration_date, termination_date, remark, created_at, updated_at`
+
+func scanLicenseRow(row interface{ Scan(...any) error }) (model.License, error) {
+	var (
+		l            model.License
+		purchaseAt   sql.NullTime
+		expirationAt sql.NullTime
+		terminateAt  sql.NullTime
+	)
+	err := row.Scan(&l.ID, &l.CompanyID, &l.Name, &l.Vendor, &l.Category, &l.LicenseKey,
+		&l.TotalSeats, &purchaseAt, &expirationAt, &terminateAt, &l.Remark, &l.CreatedAt, &l.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.License{}, ErrNotFound
+	}
+	if err != nil {
+		return model.License{}, err
+	}
+	if purchaseAt.Valid {
+		l.PurchaseDate = &purchaseAt.Time
+	}
+	if expirationAt.Valid {
+		l.ExpirationDate = &expirationAt.Time
+	}
+	if terminateAt.Valid {
+		l.TerminationDate = &terminateAt.Time
+	}
+	return l, nil
+}
+
+func (s *SQLiteStore) CreateLicense(ctx context.Context, l model.License) (model.License, error) {
+	l, err := validateLicense(l)
+	if err != nil {
+		return model.License{}, err
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO licenses
+		 (company_id, name, vendor, category, license_key, total_seats,
+		  purchase_date, expiration_date, termination_date, remark, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		l.CompanyID, l.Name, l.Vendor, l.Category, l.LicenseKey, l.TotalSeats,
+		l.PurchaseDate, l.ExpirationDate, l.TerminationDate, l.Remark, now, now)
+	if err != nil {
+		return model.License{}, fmt.Errorf("insert license: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.License{}, fmt.Errorf("license id: %w", err)
+	}
+	l.ID, l.CreatedAt, l.UpdatedAt = id, now, now
+	return l, nil
+}
+
+func (s *SQLiteStore) ListLicenses(ctx context.Context, f LicenseListFilter) ([]model.License, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+	where := "company_id = ? AND deleted_at IS NULL"
+	args := []any{f.CompanyID}
+	if kw := strings.TrimSpace(f.Keyword); kw != "" {
+		where += " AND (name LIKE ? OR vendor LIKE ?)"
+		args = append(args, "%"+kw+"%", "%"+kw+"%")
+	}
+	if f.ExpiringDays > 0 {
+		now := time.Now().UTC()
+		where += " AND termination_date IS NULL AND expiration_date IS NOT NULL AND expiration_date > ? AND expiration_date <= ?"
+		args = append(args, now, now.AddDate(0, 0, f.ExpiringDays))
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM licenses WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count licenses: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+licenseColumns+` FROM licenses WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list licenses: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.License, 0, size)
+	for rows.Next() {
+		l, err := scanLicenseRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, l)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) GetLicense(ctx context.Context, companyID, id int64) (model.License, error) {
+	return scanLicenseRow(s.db.QueryRowContext(ctx,
+		`SELECT `+licenseColumns+` FROM licenses WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		id, companyID))
+}
+
+func (s *SQLiteStore) UpdateLicense(ctx context.Context, l model.License) (model.License, error) {
+	l, err := validateLicense(l)
+	if err != nil {
+		return model.License{}, err
+	}
+	if l.ID == 0 {
+		return model.License{}, fmt.Errorf("id required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE licenses SET name = ?, vendor = ?, category = ?, license_key = ?, total_seats = ?,
+			purchase_date = ?, expiration_date = ?, termination_date = ?, remark = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		l.Name, l.Vendor, l.Category, l.LicenseKey, l.TotalSeats,
+		l.PurchaseDate, l.ExpirationDate, l.TerminationDate, l.Remark, time.Now().UTC(),
+		l.ID, l.CompanyID)
+	if err != nil {
+		return model.License{}, fmt.Errorf("update license: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return model.License{}, ErrNotFound
+	}
+	return s.GetLicense(ctx, l.CompanyID, l.ID)
+}
+
+func (s *SQLiteStore) DeleteLicense(ctx context.Context, companyID, id int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE licenses SET deleted_at = ? WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		time.Now().UTC(), id, companyID)
+	if err != nil {
+		return fmt.Errorf("delete license: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ---- 耗材管理（P2 体验运营）----
+
+const consumableColumns = `id, company_id, name, spec, unit, stock, min_quantity, remark, created_at, updated_at`
+
+func scanConsumableRow(row interface{ Scan(...any) error }) (model.Consumable, error) {
+	var c model.Consumable
+	err := row.Scan(&c.ID, &c.CompanyID, &c.Name, &c.Spec, &c.Unit, &c.Stock,
+		&c.MinQuantity, &c.Remark, &c.CreatedAt, &c.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Consumable{}, ErrNotFound
+	}
+	if err != nil {
+		return model.Consumable{}, err
+	}
+	return c, nil
+}
+
+func (s *SQLiteStore) CreateConsumable(ctx context.Context, c model.Consumable) (model.Consumable, error) {
+	c, err := validateConsumable(c)
+	if err != nil {
+		return model.Consumable{}, err
+	}
+	taken, err := s.dimensionNameTaken(ctx, "consumables", c.CompanyID, 0, c.Name)
+	if err != nil {
+		return model.Consumable{}, fmt.Errorf("check consumable name: %w", err)
+	}
+	if taken {
+		return model.Consumable{}, ErrAlreadyExists
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO consumables (company_id, name, spec, unit, stock, min_quantity, remark, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		c.CompanyID, c.Name, c.Spec, c.Unit, 0, c.MinQuantity, c.Remark, now, now)
+	if err != nil {
+		return model.Consumable{}, fmt.Errorf("insert consumable: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.Consumable{}, fmt.Errorf("consumable id: %w", err)
+	}
+	c.ID, c.Stock, c.CreatedAt, c.UpdatedAt = id, 0, now, now
+	return c, nil
+}
+
+func (s *SQLiteStore) ListConsumables(ctx context.Context, f ConsumableListFilter) ([]model.Consumable, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+	where := "company_id = ? AND deleted_at IS NULL"
+	args := []any{f.CompanyID}
+	if kw := strings.TrimSpace(f.Keyword); kw != "" {
+		where += " AND (name LIKE ? OR spec LIKE ?)"
+		args = append(args, "%"+kw+"%", "%"+kw+"%")
+	}
+	if f.LowStock != nil {
+		if *f.LowStock {
+			where += " AND min_quantity > 0 AND stock <= min_quantity"
+		} else {
+			where += " AND NOT (min_quantity > 0 AND stock <= min_quantity)"
+		}
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM consumables WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count consumables: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+consumableColumns+` FROM consumables WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list consumables: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.Consumable, 0, size)
+	for rows.Next() {
+		c, err := scanConsumableRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, c)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateConsumable(ctx context.Context, c model.Consumable) (model.Consumable, error) {
+	c, err := validateConsumable(c)
+	if err != nil {
+		return model.Consumable{}, err
+	}
+	if c.ID == 0 {
+		return model.Consumable{}, fmt.Errorf("id required")
+	}
+	taken, err := s.dimensionNameTaken(ctx, "consumables", c.CompanyID, c.ID, c.Name)
+	if err != nil {
+		return model.Consumable{}, fmt.Errorf("check consumable name: %w", err)
+	}
+	if taken {
+		return model.Consumable{}, ErrAlreadyExists
+	}
+	// 库存不经编辑面：UPDATE 语句不含 stock 列
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE consumables SET name = ?, spec = ?, unit = ?, min_quantity = ?, remark = ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		c.Name, c.Spec, c.Unit, c.MinQuantity, c.Remark, time.Now().UTC(), c.ID, c.CompanyID)
+	if err != nil {
+		return model.Consumable{}, fmt.Errorf("update consumable: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return model.Consumable{}, ErrNotFound
+	}
+	return scanConsumableRow(s.db.QueryRowContext(ctx,
+		`SELECT `+consumableColumns+` FROM consumables WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		c.ID, c.CompanyID))
+}
+
+func (s *SQLiteStore) DeleteConsumable(ctx context.Context, companyID, id int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE consumables SET deleted_at = ? WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		time.Now().UTC(), id, companyID)
+	if err != nil {
+		return fmt.Errorf("delete consumable: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CreateConsumableTxn 流水 + 库存原子变更：显式事务内条件更新
+//（stock + delta >= 0）零命中时区分 NotFound 与 ErrInsufficient，
+// 并发超卖由条件更新天然拦截，流水不落半截
+func (s *SQLiteStore) CreateConsumableTxn(ctx context.Context, txn model.ConsumableTxn) (model.ConsumableTxn, model.Consumable, error) {
+	if err := validateConsumableTxn(txn); err != nil {
+		return model.ConsumableTxn{}, model.Consumable{}, err
+	}
+	now := time.Now().UTC()
+	txn.CreatedAt = now
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ConsumableTxn{}, model.Consumable{}, fmt.Errorf("begin txn: %w", err)
+	}
+	rollback := func() { _ = tx.Rollback() }
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE consumables SET stock = stock + ?, updated_at = ?
+		 WHERE id = ? AND company_id = ? AND deleted_at IS NULL AND stock + ? >= 0`,
+		txn.Delta, now, txn.ConsumableID, txn.CompanyID, txn.Delta)
+	if err != nil {
+		rollback()
+		return model.ConsumableTxn{}, model.Consumable{}, fmt.Errorf("apply stock: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		var exists int
+		err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM consumables WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+			txn.ConsumableID, txn.CompanyID).Scan(&exists)
+		rollback()
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ConsumableTxn{}, model.Consumable{}, ErrNotFound
+		}
+		if err != nil {
+			return model.ConsumableTxn{}, model.Consumable{}, fmt.Errorf("check consumable: %w", err)
+		}
+		return model.ConsumableTxn{}, model.Consumable{}, ErrInsufficient
+	}
+
+	ins, err := tx.ExecContext(ctx,
+		`INSERT INTO consumable_txns
+		 (company_id, consumable_id, type, delta, recipient, operator_id, operator_name, remark, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		txn.CompanyID, txn.ConsumableID, txn.Type, txn.Delta, txn.Recipient,
+		txn.OperatorID, txn.OperatorName, txn.Remark, now)
+	if err != nil {
+		rollback()
+		return model.ConsumableTxn{}, model.Consumable{}, fmt.Errorf("insert txn: %w", err)
+	}
+	id, err := ins.LastInsertId()
+	if err != nil {
+		rollback()
+		return model.ConsumableTxn{}, model.Consumable{}, fmt.Errorf("txn id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ConsumableTxn{}, model.Consumable{}, fmt.Errorf("commit txn: %w", err)
+	}
+
+	txn.ID = id
+	out, err := scanConsumableRow(s.db.QueryRowContext(ctx,
+		`SELECT `+consumableColumns+` FROM consumables WHERE id = ? AND company_id = ? AND deleted_at IS NULL`,
+		txn.ConsumableID, txn.CompanyID))
+	if err != nil {
+		return model.ConsumableTxn{}, model.Consumable{}, err
+	}
+	return txn, out, nil
+}
+
+func (s *SQLiteStore) ListConsumableTxns(ctx context.Context, f ConsumableTxnListFilter) ([]model.ConsumableTxn, int64, error) {
+	page, size := normalizeDispatchPage(f.Page, f.PageSize)
+	where := "company_id = ?"
+	args := []any{f.CompanyID}
+	if f.ConsumableID > 0 {
+		where += " AND consumable_id = ?"
+		args = append(args, f.ConsumableID)
+	}
+	if f.Type != "" {
+		where += " AND type = ?"
+		args = append(args, f.Type)
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM consumable_txns WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count consumable txns: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, company_id, consumable_id, type, delta, recipient, operator_id, operator_name, remark, created_at
+		 FROM consumable_txns WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list consumable txns: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.ConsumableTxn, 0, size)
+	for rows.Next() {
+		var txn model.ConsumableTxn
+		if err := rows.Scan(&txn.ID, &txn.CompanyID, &txn.ConsumableID, &txn.Type, &txn.Delta,
+			&txn.Recipient, &txn.OperatorID, &txn.OperatorName, &txn.Remark, &txn.CreatedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan consumable txn: %w", err)
+		}
+		items = append(items, txn)
+	}
+	return items, total, rows.Err()
 }
