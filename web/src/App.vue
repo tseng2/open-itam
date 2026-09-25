@@ -123,6 +123,29 @@
         </div>
         <div class="header-right">
           <el-tag type="info" effect="plain" class="company-tag">集团管控模式: 全公司</el-tag>
+          <!-- P2 消息中心起步：站内信铃铛（未读徽标 30s 轮询，点击展开收件箱） -->
+          <el-popover placement="bottom" :width="380" trigger="click" @show="loadNotifications">
+            <template #reference>
+              <el-badge :value="unreadCount" :hidden="!unreadCount" :max="99" class="bell-badge">
+                <el-icon :size="18" class="bell-icon"><Bell /></el-icon>
+              </el-badge>
+            </template>
+            <div class="notif-panel">
+              <div class="notif-head">
+                <span class="notif-head-title">消息中心</span>
+                <el-button link type="primary" size="small" :disabled="!unreadCount" @click="markAllRead">全部已读</el-button>
+              </div>
+              <el-scrollbar max-height="360px">
+                <div v-if="!notifications.length" class="notif-empty">暂无消息</div>
+                <div v-for="n in notifications" :key="n.id"
+                  class="notif-item" :class="{ 'is-unread': !n.read_at }" @click="openNotification(n)">
+                  <div class="notif-title">{{ n.title }}</div>
+                  <div class="notif-content">{{ n.content }}</div>
+                  <div class="notif-time">{{ timeAgo(n.created_at) }}</div>
+                </div>
+              </el-scrollbar>
+            </div>
+          </el-popover>
           <div class="user-profile" v-if="currentUser">
             <el-tag type="success" size="small">{{ currentUser.role === 'super_admin' ? '超级管理员' : (currentUser.role === 'admin' ? '管理员' : '普通用户') }}</el-tag>
             <span class="username-display">{{ currentUser.real_name || currentUser.username }}</span>
@@ -141,12 +164,14 @@
 <script setup>
 import { ref, computed, provide, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, getToken, setToken } from './api'
+import { api, getToken, setToken, timeAgo } from './api'
 
 const route = useRoute()
 const router = useRouter()
 const token = ref(getToken())
 const openChanges = ref(0)
+const unreadCount = ref(0)
+const notifications = ref([])
 
 const isLoginPage = computed(() => route.path === '/login')
 const isMobilePage = computed(() => !!route.meta.mobile)
@@ -196,10 +221,51 @@ async function pollChanges() {
   } catch { /* ignore */ }
 }
 provide('pollChanges', pollChanges)
-onMounted(() => { 
+
+// ---- P2 消息中心起步：站内信铃铛 ----
+// 未读计数与预警徽标同节奏轮询（30s）；company_id 缺省 = 不限公司，
+// 收件箱边界由 JWT 本人决定
+async function pollUnread() {
+  if (isLoginPage.value || !getToken()) return
+  try {
+    const d = await api('/api/v1/notifications/unread-count')
+    unreadCount.value = d.data?.count || 0
+  } catch { /* ignore */ }
+}
+
+async function loadNotifications() {
+  try {
+    const d = await api('/api/v1/notifications?page_size=20')
+    notifications.value = d.data?.items || []
+  } catch { /* ignore */ }
+}
+
+// 点击消息：就地标记已读并按 resource 跳转对应页面
+async function openNotification(n) {
+  if (!n.read_at) {
+    try {
+      await api(`/api/v1/notifications/${n.id}/read`, { method: 'POST' })
+      n.read_at = new Date().toISOString()
+      unreadCount.value = Math.max(0, unreadCount.value - 1)
+    } catch { /* ignore */ }
+  }
+  if (n.resource === 'asset-requests') router.push('/asset-requests')
+}
+
+async function markAllRead() {
+  try {
+    await api('/api/v1/notifications/read-all', { method: 'POST' })
+    unreadCount.value = 0
+    notifications.value.forEach(n => { n.read_at = n.read_at || new Date().toISOString() })
+  } catch { /* ignore */ }
+}
+
+onMounted(() => {
   if (!isLoginPage.value) {
     pollChanges()
-    setInterval(pollChanges, 30000) 
+    pollUnread()
+    setInterval(pollChanges, 30000)
+    setInterval(pollUnread, 30000)
   }
 })
 </script>
@@ -321,6 +387,65 @@ body {
   border: 1px solid #cbd5e1;
   color: #475569;
   font-size: 12px;
+}
+/* 站内信铃铛与收件箱面板 */
+.bell-badge {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+.bell-icon {
+  color: #475569;
+}
+.notif-panel {
+  display: flex;
+  flex-direction: column;
+}
+.notif-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 4px 8px 4px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.notif-head-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+}
+.notif-empty {
+  padding: 32px 0;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
+}
+.notif-item {
+  padding: 10px 6px;
+  border-bottom: 1px dashed #e2e8f0;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.notif-item:hover {
+  background: #f1f5f9;
+}
+.notif-item.is-unread .notif-title {
+  font-weight: 600;
+  color: #1e293b;
+}
+.notif-title {
+  font-size: 13px;
+  color: #334155;
+  margin-bottom: 4px;
+}
+.notif-content {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.notif-time {
+  font-size: 11px;
+  color: #94a3b8;
 }
 .page-content {
   padding: 20px;
