@@ -464,6 +464,10 @@ sequenceDiagram
 | GET/POST/PUT/DELETE | `/api/v1/locations` | 位置维度库（P1）：同上（ParentID 树形，父级须同公司、禁自引/成环 400；被资产引用或有子位置时删除 409） |
 | GET/POST/PUT/DELETE | `/api/v1/asset-models` | 型号库（P1）：列表另支持 category_id 过滤；类别/厂商/折旧规则外键校验（跨公司 404）；被资产引用时删除 409 |
 | GET | `/api/v1/operation-logs` | 操作日志审计列表（P2：company_id 0=全部含全局/user_id/keyword/action/resource/resource_id/start_time+end_time RFC3339 闭区间过滤+分页；**仅 admin**，只读无写面） |
+| GET | `/api/v1/notifications` | 我的站内信收件箱（P2 消息中心：unread/type 过滤+分页；user_id 取 JWT 本人，传参无效；company_id 可选 0=不限公司） |
+| GET | `/api/v1/notifications/unread-count` | 未读消息计数（铃铛徽标轮询；company_id 可选） |
+| POST | `/api/v1/notifications/{id}/read` | 标记单条已读（幂等；跨用户/不存在 404） |
+| POST | `/api/v1/notifications/read-all` | 全部已读（仅影响本人未读，返回受影响数） |
 
 **免登录公开面（阶段五 P0-β 移动扫码，无 JWT）：**
 
@@ -496,6 +500,8 @@ sequenceDiagram
 **路由挂载约定（易踩坑）**：服务端是双层路由——外层 `net/http` ServeMux 负责 Agent 通道，并按**硬编码前缀**把管理 API 转给内层 gin 引擎（`internal/server/api/server.go` 的 `NewHandler`）。新增一类 gin 资源路由时，除了在 `api/router.go` 注册，还必须在该前缀挂载表中补一行 `/api/v1/<resource>`，否则外层 mux 会直接返回 404，且构建、单测都不会报错，只能部署后才会暴露。
 
 **操作日志契约（P2 体验运营首项）**：`operation_logs` 追加式审计表（`company_id`（0=全局面操作）/ `user_id` + `username`/`role` 操作人快照 / `action` / `resource` / `resource_id` / `path` 原始路径兜底 / `detail` 请求体摘要 / `ip` / `user_agent` / `status` HTTP 状态码 / `created_at`）——**不挂 BaseModel 软删除语义，不提供任何修改/删除面（审计流水不可变）**。**写入有两条路径**：① gin 审计中间件 `middleware.AuditLog`（挂在 AuthMiddleware 之后、全部受保护路由）对变更类方法（POST/PUT/DELETE/PATCH）在业务完成后留痕——操作人取 JWT 上下文；**动作/对象派生规则**（`ParseAuditRequest` 纯函数）：路径尾段为数字 → 方法缺省动作（POST=create / PUT=update / DELETE=delete），尾段非数字 → 尾段即动作词（`/dispatches/5/return` → `return`、`/assets/import` → `import`），动作段前一段为数字即对象 ID；多级子资源的 ID 语义歧义以 `path` 原文兜底。② 登录是公开面不经中间件，在登录处理器内单独留痕：成功记 `login`（操作人取用户表）、失败（密码错/被禁用/未设密码）记 `login_failed`（能定位到用户则带身份，查无此人 user_id/company_id 记 0）。**公司归属**：query `company_id` 优先、JSON body `company_id` 兜底、皆无记 0（全局配置类操作）。**请求体采集防护**：仅 Content-Length 明确且 ≤64KB 的 JSON 报文预读（读后复位，业务 handler 无感），明细截断 2048 字节；multipart（Excel 导入等）与超限/分块未知长度报文一律不动流、明细留空——审计绝不改变业务行为。**审计旁路语义**：落库失败只经 `c.Error` 上报 gin 错误链，绝不阻塞业务响应；越权失败尝试（403）同样留痕（安全审计信号）。**时间口径**：审计 `created_at` 与过滤参数统一 UTC（glebarez SQLite 按带时区偏移的文本存取时间，写入本地/查询 UTC 会让 SQL 文本比较错位；MariaDB 驱动统一转换无此问题，但双实现必须同一口径）；列宽防御在 store 边界截断超宽字段（MariaDB 严格模式会因超宽丢弃整条审计）。**查询面**：`GET /api/v1/operation-logs` 仅 admin（RoleMiddleware），company_id 0/缺省 = 全部（含全局行）；无 retention 清理策略（表量级=管理操作频次，暂不构成风险，后续报表中心再评估归档）。
+
+**消息中心契约（P2 体验运营第二项：站内信起步）**：`notifications` 表（`company_id` / `user_id` 收件人 / `type` 通知类型 / `title` / `content` / `resource` + `resource_id` 跳转锚点 / `read_at` NULL=未读）。**收件箱安全边界是 user_id**（JWT 本人收口，传参无效；company_id 可选，0 = 不限公司——顶栏铃铛无公司上下文，跨公司用户自己的通知全可见）。**已读语义**：新增通知一律未读（store 归一 ReadAt=nil，已读态只能经标记动作产生）；单条已读幂等（重复标记放行——铃铛轮询与点击天然并发）；全部已读返回受影响数；跨用户/不存在一律 404。**事件源接线是业务旁路**（沿审计旁路先例）：通知投递失败只经 `c.Error` 上报 gin 错误链，绝不阻塞业务主流程；首个事件源为设备申请审批流——提交 → 扇出通知公司全部在册管理员（admin + super_admin，`notifyCompanyAdmins`），通过/驳回 → 回执申请人（文案带资产编码，富化查询失败回落"资产 #ID"，通知不因文案富化失败而丢失）。A4 Webhook 是消息中心的出站通道（推送外部系统），与站内信正交互补；后续事件源（盘点异常/告警升级/折旧完成）按场景接入。**Web 端**：顶栏铃铛（未读徽标 30s 轮询同预警节奏，max 99）+ popover 收件箱（最近 20 条，点击就地已读并按 resource 跳转对应页面，全部已读按钮）；独立消息中心页面留待报表中心阶段一并规划。
 
 ---
 
