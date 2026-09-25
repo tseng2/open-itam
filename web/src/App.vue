@@ -40,6 +40,12 @@
           <span>我的门户 (自助)</span>
         </el-menu-item>
 
+        <!-- P2 消息中心独立页：全员可见（JWT 本人收口），铃铛 popover 的全量入口 -->
+        <el-menu-item index="/notifications">
+          <el-icon><Bell /></el-icon>
+          <span>消息中心</span>
+        </el-menu-item>
+
         <el-sub-menu index="assets-group">
           <template #title>
             <el-icon><Box /></el-icon>
@@ -52,6 +58,14 @@
           <el-menu-item index="/dispatches">
             <el-icon><Suitcase /></el-icon>
             <span>外派出差终端</span>
+          </el-menu-item>
+          <el-menu-item index="/storage-lendings">
+            <el-icon><Wallet /></el-icon>
+            <span>移动存储领用</span>
+          </el-menu-item>
+          <el-menu-item index="/part-records">
+            <el-icon><ShoppingCart /></el-icon>
+            <span>配件出入库</span>
           </el-menu-item>
           <el-menu-item index="/stocktakes">
             <el-icon><FullScreen /></el-icon>
@@ -149,7 +163,10 @@
             <div class="notif-panel">
               <div class="notif-head">
                 <span class="notif-head-title">消息中心</span>
-                <el-button link type="primary" size="small" :disabled="!unreadCount" @click="markAllRead">全部已读</el-button>
+                <span class="notif-head-actions">
+                  <el-button link type="primary" size="small" @click="goNotifications">查看全部</el-button>
+                  <el-button link type="primary" size="small" :disabled="!unreadCount" @click="markAllRead">全部已读</el-button>
+                </span>
               </div>
               <el-scrollbar max-height="360px">
                 <div v-if="!notifications.length" class="notif-empty">暂无消息</div>
@@ -181,6 +198,7 @@
 import { ref, computed, provide, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, getToken, setToken, timeAgo } from './api'
+import { notificationRoute } from './notifications'
 
 const route = useRoute()
 const router = useRouter()
@@ -205,8 +223,11 @@ const currentRouteTitle = computed(() => {
   const map = {
     '/dashboard': '总览大盘',
     '/portal': '我的门户（员工自助）',
+    '/notifications': '消息中心',
     '/assets': '硬件固定资产台账',
     '/dispatches': '外派出差终端管理',
+    '/storage-lendings': '移动存储领用',
+    '/part-records': '配件出入库记录',
     '/stocktakes': '盘点任务管理',
     '/asset-requests': '设备申请审批',
     '/depreciations': '折旧规则引擎',
@@ -260,14 +281,7 @@ async function loadNotifications() {
 }
 
 // 点击消息：就地标记已读并按 resource 跳转对应页面
-//（阶段五收官扩三类事件源：资产告警/耗材预警/许可到期）
-const notificationRoutes = {
-  'asset-requests': '/asset-requests',
-  'assets': '/assets',
-  'consumables': '/consumables',
-  'licenses': '/software',
-}
-
+//（映射与独立消息中心页共用 ./notifications 共享模块，禁止两处复制）
 async function openNotification(n) {
   if (!n.read_at) {
     try {
@@ -276,7 +290,13 @@ async function openNotification(n) {
       unreadCount.value = Math.max(0, unreadCount.value - 1)
     } catch { /* ignore */ }
   }
-  if (notificationRoutes[n.resource]) router.push(notificationRoutes[n.resource])
+  const target = notificationRoute(n.resource)
+  if (target) router.push(target)
+}
+
+// 铃铛 popover 只看最近 20 条，全量收件箱去独立消息中心页
+function goNotifications() {
+  router.push('/notifications')
 }
 
 async function markAllRead() {
@@ -434,6 +454,11 @@ body {
   align-items: center;
   padding: 0 4px 8px 4px;
   border-bottom: 1px solid #e2e8f0;
+}
+.notif-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .notif-head-title {
   font-size: 14px;

@@ -1,8 +1,11 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import Dashboard from './views/Dashboard.vue'
 import MyPortal from './views/MyPortal.vue'
+import Notifications from './views/Notifications.vue'
 import Assets from './views/Assets.vue'
 import Dispatches from './views/Dispatches.vue'
+import StorageLendings from './views/StorageLendings.vue'
+import PartRecords from './views/PartRecords.vue'
 import Stocktakes from './views/Stocktakes.vue'
 import AssetRequests from './views/AssetRequests.vue'
 import Depreciations from './views/Depreciations.vue'
@@ -28,8 +31,11 @@ const router = createRouter({
     { path: '/login', component: Login },
     { path: '/dashboard', component: Dashboard },
     { path: '/portal', component: MyPortal },
+    { path: '/notifications', component: Notifications },
     { path: '/assets', component: Assets },
     { path: '/dispatches', component: Dispatches },
+    { path: '/storage-lendings', component: StorageLendings },
+    { path: '/part-records', component: PartRecords },
     { path: '/stocktakes', component: Stocktakes },
     { path: '/asset-requests', component: AssetRequests },
     { path: '/depreciations', component: Depreciations },
