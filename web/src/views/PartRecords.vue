@@ -6,7 +6,7 @@
         <span class="subtitle">IT 配件流水台账（追加式，无编辑删除）：操作人自动取当前登录人，业务时间缺省为登记当下</span>
       </div>
       <div class="actions">
-        <el-button type="primary" @click="openCreateDialog">
+        <el-button v-if="isAdmin" type="primary" @click="openCreateDialog">
           <el-icon><Plus /></el-icon> 登记流水
         </el-button>
       </div>
@@ -149,12 +149,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { api } from '../api'
 import { ElMessage } from 'element-plus'
 
 // 配件出入库（阶段一遗留清欠）：GET/POST /api/v1/part-records，
-// 追加式流水无编辑删除面；direction 常量 in/out 对应入库/出库
+// 追加式流水无编辑删除面；direction 常量 in/out 对应入库/出库。
+// 登记流水写面服务端 RBAC 收口 admin（2026-09-26），前端同步 gate
 const companies = ref([])
 const companyId = ref('')
 const direction = ref('')
@@ -169,6 +170,15 @@ const submitting = ref(false)
 
 const showDialog = ref(false)
 const formRef = ref(null)
+
+const isAdmin = computed(() => {
+  try {
+    const u = JSON.parse(localStorage.getItem('itagent_user') || 'null')
+    return !!u && (u.role === 'admin' || u.role === 'super_admin')
+  } catch {
+    return false
+  }
+})
 
 const emptyForm = () => ({
   company_id: '', direction: 'in', part_type: '', part_name: '',

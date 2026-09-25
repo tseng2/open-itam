@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"itagent/internal/server/api/middleware"
 	"itagent/internal/server/model"
 	"itagent/internal/server/store"
 	"github.com/gin-gonic/gin"
@@ -13,13 +14,19 @@ import (
 
 type StorageLendingHandler struct{}
 
-func RegisterStorageLendingRoutes(r *gin.RouterGroup) {
+// RegisterStorageLendingRoutes 读面登录可读（列表），写面仅 admin
+//（2026-09-26 RBAC 前后端同步收口：dimension 先例——同前缀读/写两组注册）
+func RegisterStorageLendingRoutes(protected *gin.RouterGroup) {
 	h := &StorageLendingHandler{}
-	g := r.Group("/storage-lendings")
+	read := protected.Group("/storage-lendings")
 	{
-		g.GET("", h.List)
-		g.POST("", h.Create)
-		g.PUT("/:id", h.Update)
+		read.GET("", h.List)
+	}
+	adminOnly := protected.Group("/storage-lendings")
+	adminOnly.Use(middleware.RoleMiddleware("admin"))
+	{
+		adminOnly.POST("", h.Create)
+		adminOnly.PUT("/:id", h.Update)
 	}
 }
 

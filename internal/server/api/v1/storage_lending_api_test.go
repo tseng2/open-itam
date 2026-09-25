@@ -217,3 +217,28 @@ func TestStorageLendingUpdateBadIDAndNotFound(t *testing.T) {
 		t.Fatalf("not found status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// 写面收口 admin（2026-09-26）：user 角色 403，读面保持登录可读
+func TestStorageLendingWriteRequiresAdminRole(t *testing.T) {
+	r := setupStorageLendingRouter(t)
+	companyID := seedStorageLendingCompany(t)
+	token, err := middleware.GenerateToken(2, "ordinary", "user")
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	rec := doStorageJSON(t, r, http.MethodGet, "/api/v1/storage-lendings", token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("user read status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = doStorageJSON(t, r, http.MethodPost, "/api/v1/storage-lendings", token, gin.H{
+		"company_id": companyID, "borrower": "李四",
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("user create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = doStorageJSON(t, r, http.MethodPut, "/api/v1/storage-lendings/1", token, gin.H{"brand": "x"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("user update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}

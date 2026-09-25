@@ -6,7 +6,7 @@
         <span class="subtitle">U 盘 / 移动硬盘等领用与归还登记：领用建账、归还回填归期与数量；绿盾认证标记加密合规</span>
       </div>
       <div class="actions">
-        <el-button type="primary" @click="openCreateDialog">
+        <el-button v-if="isAdmin" type="primary" @click="openCreateDialog">
           <el-icon><Plus /></el-icon> 登记领用
         </el-button>
       </div>
@@ -70,7 +70,7 @@
         <el-table-column prop="remark" label="备注" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ row.remark || '—' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column v-if="isAdmin" label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openEditDialog(row)">编辑</el-button>
             <el-button v-if="!row.return_date" link type="success" size="small" @click="openReturnDialog(row)">归还</el-button>
@@ -160,13 +160,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { api } from '../api'
 import { ElMessage } from 'element-plus'
 
 // 移动存储领用（阶段一遗留清欠）：GET/POST /api/v1/storage-lendings +
 // PUT /:id。PUT 指针字段契约：未传保持、显式 null 清空——编辑对话框
-// 全量送字段，清空的日期必须带 null，绝不能漏字段（漏了语义就变成保持）
+// 全量送字段，清空的日期必须带 null，绝不能漏字段（漏了语义就变成保持）。
+// 写面（登记/编辑/归还）服务端 RBAC 收口 admin（2026-09-26），前端同步 gate
 const companies = ref([])
 const companyId = ref('')
 const department = ref('')
@@ -186,6 +187,15 @@ const formRef = ref(null)
 const showReturnDialog = ref(false)
 const returningRow = ref(null)
 const returnForm = reactive({ return_date: '', return_qty: 1, total: 0 })
+
+const isAdmin = computed(() => {
+  try {
+    const u = JSON.parse(localStorage.getItem('itagent_user') || 'null')
+    return !!u && (u.role === 'admin' || u.role === 'super_admin')
+  } catch {
+    return false
+  }
+})
 
 const emptyForm = () => ({
   company_id: '', borrower: '', department: '', borrow_date: '',

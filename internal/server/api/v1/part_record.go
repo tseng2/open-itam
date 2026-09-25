@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"itagent/internal/server/api/middleware"
 	"itagent/internal/server/model"
 	"itagent/internal/server/store"
 	"github.com/gin-gonic/gin"
@@ -11,12 +12,18 @@ import (
 
 type PartRecordHandler struct{}
 
-func RegisterPartRecordRoutes(r *gin.RouterGroup) {
+// RegisterPartRecordRoutes 读面登录可读，写面（登记流水）仅 admin
+//（2026-09-26 RBAC 前后端同步收口：dimension 先例）
+func RegisterPartRecordRoutes(protected *gin.RouterGroup) {
 	h := &PartRecordHandler{}
-	g := r.Group("/part-records")
+	read := protected.Group("/part-records")
 	{
-		g.GET("", h.List)
-		g.POST("", h.Create)
+		read.GET("", h.List)
+	}
+	adminOnly := protected.Group("/part-records")
+	adminOnly.Use(middleware.RoleMiddleware("admin"))
+	{
+		adminOnly.POST("", h.Create)
 	}
 }
 
