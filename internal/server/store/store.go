@@ -148,6 +148,14 @@ type Store interface {
 	// 写入方为 gin 审计中间件与登录处理器；查询面仅 admin（RBAC 在 API 层）
 	CreateOperationLog(ctx context.Context, log model.OperationLog) error
 	ListOperationLogs(ctx context.Context, f OperationLogListFilter) ([]model.OperationLog, int64, error)
+	// 消息中心起步（P2 体验运营）：站内信收件箱。收件人只能读写自己的
+	// 通知（UserID 过滤在 store 层强制）；已读标记幂等；通知产生方为
+	// 业务事件源（首个：设备申请审批流），推送失败不阻塞主流程
+	CreateNotification(ctx context.Context, n model.Notification) (model.Notification, error)
+	ListNotifications(ctx context.Context, f NotificationListFilter) ([]model.Notification, int64, error)
+	CountUnreadNotifications(ctx context.Context, companyID, userID int64) (int64, error)
+	MarkNotificationRead(ctx context.Context, companyID, userID, id int64, readAt time.Time) error
+	MarkAllNotificationsRead(ctx context.Context, companyID, userID int64, readAt time.Time) (int64, error)
 	Close() error
 }
 
@@ -217,4 +225,15 @@ type OperationLogListFilter struct {
 	EndTime    *time.Time
 	Page       int
 	PageSize   int
+}
+
+// NotificationListFilter 站内信收件箱查询条件：UserID > 0 必填
+//（收件箱只查自己，跨用户在 store 层强制为空集）；Unread nil 不过滤
+type NotificationListFilter struct {
+	CompanyID int64
+	UserID    int64
+	Unread    *bool
+	Type      string
+	Page      int
+	PageSize  int
 }

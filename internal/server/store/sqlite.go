@@ -285,6 +285,26 @@ CREATE INDEX IF NOT EXISTS idx_operation_logs_action ON operation_logs(action);
 CREATE INDEX IF NOT EXISTS idx_operation_logs_resource ON operation_logs(resource);
 CREATE INDEX IF NOT EXISTS idx_operation_logs_resource_id ON operation_logs(resource_id);
 CREATE INDEX IF NOT EXISTS idx_operation_logs_created_at ON operation_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id  INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    type        TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    resource    TEXT NOT NULL DEFAULT '',
+    resource_id TEXT NOT NULL DEFAULT '',
+    read_at     DATETIME,
+    created_at  DATETIME NOT NULL,
+    updated_at  DATETIME NOT NULL,
+    deleted_at  DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_company ON notifications(company_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications(type);
+CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read_at);
 `
 
 type SQLiteStore struct {
@@ -2214,4 +2234,159 @@ func (s *SQLiteStore) ListOperationLogs(ctx context.Context, f OperationLogListF
 		items = append(items, l)
 	}
 	return items, total, rows.Err()
+}
+
+// ---- 消息中心起步：站内信收件箱（P2 体验运营）----
+
+func (s *SQLiteStore) CreateNotification(ctx context.Context, n model.Notification) (model.Notification, error) {
+	if err := validateNotification(&n); err != nil {
+		return model.Notification{}, err
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO notifications
+		 (company_id, user_id, type, title, content, resource, resource_id, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		n.CompanyID, n.UserID, n.Type, n.Title, n.Content, n.Resource, n.ResourceID, now, now)
+	if err != nil {
+		return model.Notification{}, fmt.Errorf("insert notification: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return model.Notification{}, fmt.Errorf("notification id: %w", err)
+	}
+	n.ID, n.CreatedAt, n.UpdatedAt = id, now, now
+	return n, nil
+}
+
+// notificationWhere 收件箱口径：user_id 是唯一安全边界（UserID ≤ 0 空集）；
+// CompanyID 0 = 不过滤公司（顶栏铃铛无公司上下文）
+func notificationWhere(f NotificationListFilter) (string, []any) {
+	if f.UserID <= 0 {
+		return "1=0", nil
+	}
+	where := "deleted_at IS NULL AND user_id = ?"
+	args := []any{f.UserID}
+	if f.CompanyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, f.CompanyID)
+	}
+	if f.Unread != nil {
+		if *f.Unread {
+			where += " AND read_at IS NULL"
+		} else {
+			where += " AND read_at IS NOT NULL"
+		}
+	}
+	if f.Type != "" {
+		where += " AND type = ?"
+		args = append(args, f.Type)
+	}
+	return where, args
+}
+
+func (s *SQLiteStore) ListNotifications(ctx context.Context, f NotificationListFilter) ([]model.Notification, int64, error) {
+	page, size := normalizeOperationLogPage(f.Page, f.PageSize)
+	where, args := notificationWhere(f)
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM notifications WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count notifications: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, company_id, user_id, type, title, content, resource, resource_id, read_at, created_at
+		 FROM notifications WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list notifications: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.Notification, 0, size)
+	for rows.Next() {
+		var (
+			n       model.Notification
+			readAt  sql.NullTime
+		)
+		if err := rows.Scan(&n.ID, &n.CompanyID, &n.UserID, &n.Type, &n.Title,
+			&n.Content, &n.Resource, &n.ResourceID, &readAt, &n.CreatedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan notification: %w", err)
+		}
+		if readAt.Valid {
+			t := readAt.Time
+			n.ReadAt = &t
+		}
+		items = append(items, n)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *SQLiteStore) CountUnreadNotifications(ctx context.Context, companyID, userID int64) (int64, error) {
+	if userID <= 0 {
+		return 0, nil
+	}
+	where, args := "deleted_at IS NULL AND user_id = ? AND read_at IS NULL", []any{userID}
+	if companyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, companyID)
+	}
+	var n int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM notifications WHERE `+where, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count unread notifications: %w", err)
+	}
+	return n, nil
+}
+
+func (s *SQLiteStore) MarkNotificationRead(ctx context.Context, companyID, userID, id int64, readAt time.Time) error {
+	if userID <= 0 {
+		return ErrNotFound
+	}
+	where, args := "id = ? AND user_id = ? AND read_at IS NULL AND deleted_at IS NULL", []any{id, userID}
+	if companyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, companyID)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE notifications SET read_at = ?, updated_at = ? WHERE `+where,
+		append([]any{readAt, readAt}, args...)...)
+	if err != nil {
+		return fmt.Errorf("mark notification read: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected > 0 {
+		return nil
+	}
+	checkWhere, checkArgs := "id = ? AND user_id = ? AND deleted_at IS NULL", []any{id, userID}
+	if companyID > 0 {
+		checkWhere += " AND company_id = ?"
+		checkArgs = append(checkArgs, companyID)
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM notifications WHERE `+checkWhere, checkArgs...).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("check notification: %w", err)
+	}
+	return nil // 已读重复标记：幂等放行
+}
+
+func (s *SQLiteStore) MarkAllNotificationsRead(ctx context.Context, companyID, userID int64, readAt time.Time) (int64, error) {
+	if userID <= 0 {
+		return 0, nil
+	}
+	where, args := "user_id = ? AND read_at IS NULL AND deleted_at IS NULL", []any{userID}
+	if companyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, companyID)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE notifications SET read_at = ?, updated_at = ? WHERE `+where,
+		append([]any{readAt, readAt}, args...)...)
+	if err != nil {
+		return 0, fmt.Errorf("mark all notifications read: %w", err)
+	}
+	return res.RowsAffected()
 }
