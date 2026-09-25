@@ -71,6 +71,7 @@ func InitDB(dbType, dsn string) (*gorm.DB, error) {
 		&model.Supplier{},
 		&model.Location{},
 		&model.AssetModel{},
+		&model.OperationLog{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("auto migration failed: %w", err)

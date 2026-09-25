@@ -144,6 +144,10 @@ type Store interface {
 	ListAssetModels(ctx context.Context, f AssetModelListFilter) ([]model.AssetModel, int64, error)
 	UpdateAssetModel(ctx context.Context, m model.AssetModel) (model.AssetModel, error)
 	DeleteAssetModel(ctx context.Context, companyID, id int64) error
+	// 操作日志（P2 体验运营）：追加式审计流水，不提供修改/删除面。
+	// 写入方为 gin 审计中间件与登录处理器；查询面仅 admin（RBAC 在 API 层）
+	CreateOperationLog(ctx context.Context, log model.OperationLog) error
+	ListOperationLogs(ctx context.Context, f OperationLogListFilter) ([]model.OperationLog, int64, error)
 	Close() error
 }
 
@@ -195,6 +199,22 @@ type AssetModelListFilter struct {
 	CompanyID  int64
 	CategoryID int64
 	Keyword    string
+	Page       int
+	PageSize   int
+}
+
+// OperationLogListFilter 操作日志列表查询条件：
+// CompanyID 0 = 不过滤（含 company_id=0 的全局面操作）；UserID 0、
+// Action/Resource/ResourceID/Keyword 空值不过滤；时间窗闭区间含边界
+type OperationLogListFilter struct {
+	CompanyID  int64
+	UserID     int64
+	Keyword    string // 操作人姓名快照模糊匹配
+	Action     string
+	Resource   string
+	ResourceID string
+	StartTime  *time.Time
+	EndTime    *time.Time
 	Page       int
 	PageSize   int
 }

@@ -261,6 +261,30 @@ CREATE INDEX IF NOT EXISTS idx_asset_models_company ON asset_models(company_id);
 CREATE INDEX IF NOT EXISTS idx_asset_models_category ON asset_models(category_id);
 CREATE INDEX IF NOT EXISTS idx_asset_models_manufacturer ON asset_models(manufacturer_id);
 CREATE INDEX IF NOT EXISTS idx_asset_models_depreciation ON asset_models(depreciation_id);
+
+CREATE TABLE IF NOT EXISTS operation_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id  INTEGER NOT NULL DEFAULT 0,
+    user_id     INTEGER NOT NULL DEFAULT 0,
+    username    TEXT NOT NULL DEFAULT '',
+    role        TEXT NOT NULL DEFAULT '',
+    action      TEXT NOT NULL,
+    resource    TEXT NOT NULL,
+    resource_id TEXT NOT NULL DEFAULT '',
+    path        TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',
+    ip          TEXT NOT NULL DEFAULT '',
+    user_agent  TEXT NOT NULL DEFAULT '',
+    status      INTEGER NOT NULL DEFAULT 0,
+    created_at  DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_operation_logs_company ON operation_logs(company_id);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_user ON operation_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_action ON operation_logs(action);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_resource ON operation_logs(resource);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_resource_id ON operation_logs(resource_id);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_created_at ON operation_logs(created_at);
 `
 
 type SQLiteStore struct {
@@ -2104,4 +2128,90 @@ func (s *SQLiteStore) UpdateAssetModel(ctx context.Context, m model.AssetModel) 
 
 func (s *SQLiteStore) DeleteAssetModel(ctx context.Context, companyID, id int64) error {
 	return s.deleteDimension(ctx, "asset_models", "asset model", companyID, id)
+}
+
+// ---- 操作日志（P2 体验运营）----
+
+func (s *SQLiteStore) CreateOperationLog(ctx context.Context, log model.OperationLog) error {
+	if err := validateOperationLog(&log); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO operation_logs
+		 (company_id, user_id, username, role, action, resource, resource_id, path, detail, ip, user_agent, status, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		log.CompanyID, log.UserID, log.Username, log.Role, log.Action, log.Resource,
+		log.ResourceID, log.Path, log.Detail, log.IP, log.UserAgent, log.Status, log.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert operation log: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListOperationLogs(ctx context.Context, f OperationLogListFilter) ([]model.OperationLog, int64, error) {
+	page, size := normalizeOperationLogPage(f.Page, f.PageSize)
+
+	where := "1=1"
+	args := []any{}
+	if f.CompanyID > 0 {
+		where += " AND company_id = ?"
+		args = append(args, f.CompanyID)
+	}
+	if f.UserID > 0 {
+		where += " AND user_id = ?"
+		args = append(args, f.UserID)
+	}
+	if f.Action != "" {
+		where += " AND action = ?"
+		args = append(args, f.Action)
+	}
+	if f.Resource != "" {
+		where += " AND resource = ?"
+		args = append(args, f.Resource)
+	}
+	if f.ResourceID != "" {
+		where += " AND resource_id = ?"
+		args = append(args, f.ResourceID)
+	}
+	if kw := strings.TrimSpace(f.Keyword); kw != "" {
+		where += " AND username LIKE ?"
+		args = append(args, "%"+kw+"%")
+	}
+	if f.StartTime != nil {
+		start := f.StartTime.UTC()
+		where += " AND created_at >= ?"
+		args = append(args, start)
+	}
+	if f.EndTime != nil {
+		end := f.EndTime.UTC()
+		where += " AND created_at <= ?"
+		args = append(args, end)
+	}
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM operation_logs WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count operation logs: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, company_id, user_id, username, role, action, resource, resource_id,
+		        path, detail, ip, user_agent, status, created_at
+		 FROM operation_logs WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list operation logs: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.OperationLog, 0, size)
+	for rows.Next() {
+		var l model.OperationLog
+		if err := rows.Scan(&l.ID, &l.CompanyID, &l.UserID, &l.Username, &l.Role,
+			&l.Action, &l.Resource, &l.ResourceID, &l.Path, &l.Detail, &l.IP,
+			&l.UserAgent, &l.Status, &l.CreatedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan operation log: %w", err)
+		}
+		items = append(items, l)
+	}
+	return items, total, rows.Err()
 }
