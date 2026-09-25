@@ -260,6 +260,14 @@ async function loadNotifications() {
 }
 
 // 点击消息：就地标记已读并按 resource 跳转对应页面
+//（阶段五收官扩三类事件源：资产告警/耗材预警/许可到期）
+const notificationRoutes = {
+  'asset-requests': '/asset-requests',
+  'assets': '/assets',
+  'consumables': '/consumables',
+  'licenses': '/software',
+}
+
 async function openNotification(n) {
   if (!n.read_at) {
     try {
@@ -268,7 +276,7 @@ async function openNotification(n) {
       unreadCount.value = Math.max(0, unreadCount.value - 1)
     } catch { /* ignore */ }
   }
-  if (n.resource === 'asset-requests') router.push('/asset-requests')
+  if (notificationRoutes[n.resource]) router.push(notificationRoutes[n.resource])
 }
 
 async function markAllRead() {
