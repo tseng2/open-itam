@@ -10,7 +10,22 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var JWTSecret = []byte("itagent-super-secret-key-change-in-prod")
+// DefaultJWTSecret 未配置时的内置回落值：仅保证存量部署升级后开箱可跑
+//（向后兼容），生产必须经 server.json jwt_secret 或环境变量覆盖
+const DefaultJWTSecret = "itagent-super-secret-key-change-in-prod"
+
+// JWTSecret JWT 签名/校验密钥：包级 var，main 启动时读配置经 SetJWTSecret
+// 注入（GenerateToken/ParseToken/AuthMiddleware 签名零波及，登录自动生效）。
+// secret 变更后存量 token 全失效（401 → 前端跳登录）属预期行为
+var JWTSecret = []byte(DefaultJWTSecret)
+
+// SetJWTSecret 启动时注入签名密钥；空串忽略（保持现值）
+func SetJWTSecret(secret string) {
+	if secret == "" {
+		return
+	}
+	JWTSecret = []byte(secret)
+}
 
 type Claims struct {
 	UserID   int64  `json:"user_id"`
