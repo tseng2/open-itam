@@ -80,7 +80,10 @@
   - [x] 报表中心：汇总 8 卡 / 年度资产价值 / 月度建账趋势 / 状态与类别分布环图，整组 admin-only，聚合纯函数口径单源（日期桶 Go 侧聚合双库可移植）。（2026-09-25 完成：`/reports/*` 四端点 + Web 图表页）
   - [x] 软件许可管理：授权池（席位总数/密钥/到期日/终止日），状态由日期派生、已用席位按资产挂接实时计数，席位超用 409 拦截 + 合规度视图，expiring_days 到期提醒窗口。（2026-09-25 完成：资产 license_id 挂接 + Web 软件页实装 + 台账表单许可下拉）
   - [x] 耗材管理：库存物料 + 追加式出入库流水（入库/出库/调整），库存只经流水变更、条件更新原子扣减防超卖，最低库存预警派生。（2026-09-25 完成：Web 耗材管理页 + 流水抽屉）
-- [x] **P2 余项 VM 部署实测**（2026-09-25，HEAD `b1774b2` 生产 MariaDB）：`vm_verify_p2b.py` 58 项回归全 PASS 零残留（许可席位全链含超用 409/耗材出入库与预警/门户四卡/报表 8 卡口径/RBAC），excel/dimension/p2 三套既有回归零回归，容器 healthy、终端心跳推进——**阶段五 P0/P1/P2 路线全部收官**
+- [x] **P2 余项 VM 部署实测**（2026-09-25，HEAD `b1774b2` 生产 MariaDB）：`vm_verify_p2b.py` 58 项回归全 PASS 零残留（许可席位全链含超用 409/耗材出入库与预警/门户四卡/报表 8 卡口径/RBAC），excel/dimension/p2 三套既有回归零回归，容器 healthy、终端心跳推进——阶段五 P0/P1/P2 路线全部收官
+- [x] **消息中心事件源扩展（阶段五收官）**：三类运营提醒接站内信——A4 告警联动（超期未归/疑似失联，**独立于 WebHook 开关**，冷却去重复用 webhook_alert_states 同表 notify_overdue/notify_missing 独立键）、耗材低库存沿触发（旧库存>预警线且新库存≤线才投，持续低位/回补不轰炸）、许可到期窗口扫描（licensealert 引擎每小时+启动即扫，ExpiringDays 口径单源勿重写，同表 license_expiring 键冷却=窗口天数）。（2026-09-25 完成：webhook 引擎双通道改造 + licensealert 新引擎 + v1 扇出闭包/沿触发旁路，AlertNotifier 函数注入规避 webhook↔api/v1 循环依赖；引擎 9 项 + licensealert 8 项 + v1 集成 3 项 + middleware 4 项测试全绿，licensealert 覆盖 89.5%）
+- [x] **JWT secret 配置化**：server.json jwt_secret + 环境变量 ITAGENT_JWT_SECRET 兜底，双缺省回落内置默认并启动告警；SetJWTSecret 启动注入包级 var，GenerateToken/ParseToken/AuthMiddleware 签名零波及；secret 变更后存量 token 全失效（401→前端跳登录）属预期。（2026-09-25 完成：middleware 单测 4 项——轮换失效/空串忽略/错密 401/roundtrip）
+- [x] **阶段五收官 VM 部署实测**（2026-09-25，HEAD `a15c065` 生产 MariaDB）：新增 `vm_verify_events.py` 全 PASS——JWT 三查（注入后登录正常/本次启动无回落告警/篡改签名 401；未配置回落告警日志在案）+ 三类通知落库（asset_alert 2 条超期+失联 WebHook 关闭下照投 / license_expiring 1 条窗口外对照不投 / consumable_low_stock 2 条沿触发）+ 冷却键隔离（notify_* 2 + license_expiring 1 落库，WebHook 通道键 0）+ 管理员未读计数 5 + 二次重启冷却去重不重复轰炸 + SQL 清理零残留；VM server.json 已注入 jwt_secret；excel/dimension/p2/p2b 四套既有回归零回归 + health 巡检全绿——**阶段五全部收官**
 
 **推荐执行顺序**：A1 → A2 → A3 → A4 → 盘点任务 → 审批流 → 折旧引擎。
 **明确不做**：QR 扫码打卡（内网拓扑矛盾，待公网/IM 通道决策）、WebSocket/gRPC 长连接重构（短连接+failover+spool 已覆盖）、SNMP 交换机端口映射（范围外）。

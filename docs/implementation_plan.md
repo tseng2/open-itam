@@ -99,4 +99,7 @@
 - [x] **P2 体验运营**：员工自助门户、报表中心、软件许可、耗材管理。（2026-09-25 全部完成：门户四卡+我的设备/申请；报表中心 8 卡/年度价值/月度趋势/分布环图（admin-only）；软件许可席位挂接与合规视图；耗材出入库流水与预警。VM 生产部署实测通过——vm_verify_p2b.py 58 项回归全 PASS + excel/dimension/p2 三套既有回归零回归 + health 全绿，阶段五 P0/P1/P2 路线收官）
   - [x] 操作日志。（2026-09-25 完成：追加式审计表 `operation_logs` + gin 审计中间件（变更类请求统一留痕，路径派生动作/对象，multipart/超限报文不采集，落库失败走 gin 错误链不阻塞业务）+ 登录成功/失败留痕 + admin 只读查询端点（公司/操作人/动作/对象/时间窗过滤）；store 双实现 TDD，时间口径统一 UTC）
   - [x] 消息中心起步（站内信）。（2026-09-25 完成：`notifications` 收件箱 store 双实现 TDD + 四端点（我的收件箱/未读计数/单条已读幂等/全部已读带受影响数），收件箱以 JWT 本人收口、company_id 可选；首个事件源接设备申请审批流三动作（提交扇出管理员、通过/驳回回执申请人），通知投递为业务旁路绝不阻塞主流程；Web 顶栏铃铛 30s 轮询 + popover 收件箱 + resource 跳转）
+  - [x] 消息中心事件源扩展（阶段五收官）。（2026-09-25 完成：A4 告警联动站内信——webhook 引擎双通道出站，站内信独立于 WebHook 开关，冷却去重复用 webhook_alert_states 同表 notify_overdue/notify_missing 独立键，AlertNotifier 函数注入规避 webhook↔api/v1 循环依赖；耗材低库存沿触发——postTxn 旁路，旧库存>预警线且新库存≤线才投（旧库存由新库存-增量回推免加读），持续低位/回补不轰炸；许可到期窗口扫描——licensealert 引擎每小时+启动即扫，ExpiringDays 口径单源勿重写，同表 license_expiring 键（asset_id 列存许可 ID）冷却=窗口天数）
+  - [x] JWT secret 配置化。（2026-09-25 完成：server.json jwt_secret + ITAGENT_JWT_SECRET 环境变量兜底 + 双缺省回落内置默认并启动告警；SetJWTSecret 启动注入包级 var，GenerateToken/ParseToken/AuthMiddleware 签名零波及；secret 变更后存量 token 全失效属预期；VM 生产 server.json 已注入 jwt_secret）
+  - [x] 阶段五收官 VM 部署实测。（2026-09-25 完成，HEAD `a15c065` 生产 MariaDB：`vm_verify_events.py` 全 PASS——JWT 三查 + 三类通知落库 + 冷却键隔离（WebHook 通道键 0）+ 未读计数 5 + 二次重启冷却去重跨重启 + SQL 清理零残留；excel/dimension/p2/p2b 四套既有回归零回归 + health 全绿——阶段五全部收官）
 - **明确不做**：QR 扫码打卡（内网拓扑矛盾）、长连接重构（短连接+failover+spool 已覆盖）、SNMP 端口映射（范围外）。
