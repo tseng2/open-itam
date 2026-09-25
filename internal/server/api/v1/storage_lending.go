@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -111,7 +112,8 @@ func (h *StorageLendingHandler) Create(c *gin.Context) {
 	Success(c, item)
 }
 
-// UpdateStorageLendingRequest 使用指针类型区分"未传"与"显式清空"
+// UpdateStorageLendingRequest 使用指针类型区分"未传"与"显式清空"：
+// 未传=保持原值、显式 null=清空（前端编辑清日期必须带 null）、有值=更新
 type UpdateStorageLendingRequest struct {
 	Department   *string    `json:"department"`
 	Borrower     *string    `json:"borrower"`
@@ -124,6 +126,17 @@ type UpdateStorageLendingRequest struct {
 	ReturnQty    *int       `json:"return_qty"`
 	SecCertified *bool      `json:"sec_certified"`
 	Remark       *string    `json:"remark"`
+}
+
+// assignStorageUpdate 落实 PUT 指针字段契约：非 nil=写入新值；JSON 键存在但
+// 值为显式 null=写 NULL 清空；键缺失=保持原值。指针经反序列化后无法区分
+// "未传"与"显式 null"（两者都是 nil），需借助原始键集合判定
+func assignStorageUpdate[T any](raw map[string]json.RawMessage, updates map[string]interface{}, key string, p *T) {
+	if p != nil {
+		updates[key] = *p
+	} else if _, ok := raw[key]; ok {
+		updates[key] = nil
+	}
 }
 
 func (h *StorageLendingHandler) Update(c *gin.Context) {
@@ -139,39 +152,34 @@ func (h *StorageLendingHandler) Update(c *gin.Context) {
 		return
 	}
 
+	body, err := c.GetRawData()
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 40001, "failed to read request body")
+		return
+	}
 	var req UpdateStorageLendingRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
+		Fail(c, http.StatusBadRequest, 40001, err.Error())
+		return
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
 		Fail(c, http.StatusBadRequest, 40001, err.Error())
 		return
 	}
 
 	updates := map[string]interface{}{}
-	setStr := func(col string, v *string) {
-		if v != nil {
-			updates[col] = *v
-		}
-	}
-	setStr("department", req.Department)
-	setStr("borrower", req.Borrower)
-	setStr("brand", req.Brand)
-	setStr("spec", req.Spec)
-	setStr("device_code", req.DeviceCode)
-	setStr("remark", req.Remark)
-	if req.BorrowDate != nil {
-		updates["borrow_date"] = *req.BorrowDate
-	}
-	if req.Quantity != nil {
-		updates["quantity"] = *req.Quantity
-	}
-	if req.ReturnDate != nil {
-		updates["return_date"] = *req.ReturnDate
-	}
-	if req.ReturnQty != nil {
-		updates["return_qty"] = *req.ReturnQty
-	}
-	if req.SecCertified != nil {
-		updates["sec_certified"] = *req.SecCertified
-	}
+	assignStorageUpdate(raw, updates, "department", req.Department)
+	assignStorageUpdate(raw, updates, "borrower", req.Borrower)
+	assignStorageUpdate(raw, updates, "borrow_date", req.BorrowDate)
+	assignStorageUpdate(raw, updates, "brand", req.Brand)
+	assignStorageUpdate(raw, updates, "spec", req.Spec)
+	assignStorageUpdate(raw, updates, "device_code", req.DeviceCode)
+	assignStorageUpdate(raw, updates, "quantity", req.Quantity)
+	assignStorageUpdate(raw, updates, "return_date", req.ReturnDate)
+	assignStorageUpdate(raw, updates, "return_qty", req.ReturnQty)
+	assignStorageUpdate(raw, updates, "sec_certified", req.SecCertified)
+	assignStorageUpdate(raw, updates, "remark", req.Remark)
 
 	if len(updates) > 0 {
 		if err := store.DB.Model(&item).Updates(updates).Error; err != nil {
