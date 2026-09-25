@@ -463,6 +463,7 @@ sequenceDiagram
 | GET/POST/PUT/DELETE | `/api/v1/suppliers` | 供应商维度库（P1）：同上（联系人/电话字段；被资产引用时删除 409） |
 | GET/POST/PUT/DELETE | `/api/v1/locations` | 位置维度库（P1）：同上（ParentID 树形，父级须同公司、禁自引/成环 400；被资产引用或有子位置时删除 409） |
 | GET/POST/PUT/DELETE | `/api/v1/asset-models` | 型号库（P1）：列表另支持 category_id 过滤；类别/厂商/折旧规则外键校验（跨公司 404）；被资产引用时删除 409 |
+| GET | `/api/v1/operation-logs` | 操作日志审计列表（P2：company_id 0=全部含全局/user_id/keyword/action/resource/resource_id/start_time+end_time RFC3339 闭区间过滤+分页；**仅 admin**，只读无写面） |
 
 **免登录公开面（阶段五 P0-β 移动扫码，无 JWT）：**
 
@@ -493,6 +494,8 @@ sequenceDiagram
 **维度治理契约（P1，CIYO 对标）**：四张维表 `manufacturers`（厂商）/ `suppliers`（供应商：contact_name / phone）/ `locations`（位置库：parent_id 树形，NULL=顶级）/ `asset_models`（型号库：category_id 复用 AssetCategory 段位且 0=不限、manufacturer_id / depreciation_id 可空外键、eol_months 0=不限）——全部公司维度实体，**名称同公司唯一（store 层校验，软删除记录不占名可重建；禁用 DB 唯一索引——asset_tag 软删占位同坑）**，名称 trim 后落库。**台账外键化**：`assets` 增 `manufacturer_id` / `model_id` / `supplier_id` / `location_id` 四个可空外键；原 `brand` / `model_name` / `location` 自由文本列**保留作落库快照**（Excel 导入导出、标签 PDF、履历零回归），挂接外键时服务端把维度名写回快照列。**展示口径单源**：`enrichAssetsDimensions` 批量 IN 富化（防 N+1），列表 / 详情 / Excel 导出三处共用——外键存在时以维表名覆盖响应展示（**维度重命名可传播**），供应商回填 `supplier_name` 富化字段（`gorm:"-"`）；富化只改响应不改库。**挂接语义**：建账传 null/0 = 不挂接，编辑传 0 = 解除挂接（快照文本保留）；外键校验存在 + 同公司（404），型号类别与资产类别不匹配 400（按"本次生效类别"校验，类别可同请求变更）；**建账未显式选厂商时随型号带出；未显式挂折旧规则时继承型号库预挂规则**（编辑不自动改）。**删除引用拦截在 API 层**（需查 assets 表，SQLiteStore 测试库无该表）：厂商被资产/型号引用 409、供应商/型号被资产引用 409、位置被资产引用或有子位置 409，均带引用数；位置父级校验：同公司（404）、禁自引与成环（400，沿父链上溯 ≤100 步）。**Excel 导入不设维度外键**（自由文本建账，导入后按需在台账逐笔挂接治理），导出则经富化呈现治理后口径（回导闭环仍成立——富化值与快照一致性由挂接写回保证）。路由挂载表已补四个前缀。
 
 **路由挂载约定（易踩坑）**：服务端是双层路由——外层 `net/http` ServeMux 负责 Agent 通道，并按**硬编码前缀**把管理 API 转给内层 gin 引擎（`internal/server/api/server.go` 的 `NewHandler`）。新增一类 gin 资源路由时，除了在 `api/router.go` 注册，还必须在该前缀挂载表中补一行 `/api/v1/<resource>`，否则外层 mux 会直接返回 404，且构建、单测都不会报错，只能部署后才会暴露。
+
+**操作日志契约（P2 体验运营首项）**：`operation_logs` 追加式审计表（`company_id`（0=全局面操作）/ `user_id` + `username`/`role` 操作人快照 / `action` / `resource` / `resource_id` / `path` 原始路径兜底 / `detail` 请求体摘要 / `ip` / `user_agent` / `status` HTTP 状态码 / `created_at`）——**不挂 BaseModel 软删除语义，不提供任何修改/删除面（审计流水不可变）**。**写入有两条路径**：① gin 审计中间件 `middleware.AuditLog`（挂在 AuthMiddleware 之后、全部受保护路由）对变更类方法（POST/PUT/DELETE/PATCH）在业务完成后留痕——操作人取 JWT 上下文；**动作/对象派生规则**（`ParseAuditRequest` 纯函数）：路径尾段为数字 → 方法缺省动作（POST=create / PUT=update / DELETE=delete），尾段非数字 → 尾段即动作词（`/dispatches/5/return` → `return`、`/assets/import` → `import`），动作段前一段为数字即对象 ID；多级子资源的 ID 语义歧义以 `path` 原文兜底。② 登录是公开面不经中间件，在登录处理器内单独留痕：成功记 `login`（操作人取用户表）、失败（密码错/被禁用/未设密码）记 `login_failed`（能定位到用户则带身份，查无此人 user_id/company_id 记 0）。**公司归属**：query `company_id` 优先、JSON body `company_id` 兜底、皆无记 0（全局配置类操作）。**请求体采集防护**：仅 Content-Length 明确且 ≤64KB 的 JSON 报文预读（读后复位，业务 handler 无感），明细截断 2048 字节；multipart（Excel 导入等）与超限/分块未知长度报文一律不动流、明细留空——审计绝不改变业务行为。**审计旁路语义**：落库失败只经 `c.Error` 上报 gin 错误链，绝不阻塞业务响应；越权失败尝试（403）同样留痕（安全审计信号）。**时间口径**：审计 `created_at` 与过滤参数统一 UTC（glebarez SQLite 按带时区偏移的文本存取时间，写入本地/查询 UTC 会让 SQL 文本比较错位；MariaDB 驱动统一转换无此问题，但双实现必须同一口径）；列宽防御在 store 边界截断超宽字段（MariaDB 严格模式会因超宽丢弃整条审计）。**查询面**：`GET /api/v1/operation-logs` 仅 admin（RoleMiddleware），company_id 0/缺省 = 全部（含全局行）；无 retention 清理策略（表量级=管理操作频次，暂不构成风险，后续报表中心再评估归档）。
 
 ---
 
