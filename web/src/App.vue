@@ -34,6 +34,12 @@
           <span>总览大盘</span>
         </el-menu-item>
 
+        <!-- P2 员工自助门户：个人视角（JWT 本人收口），全员可见 -->
+        <el-menu-item index="/portal">
+          <el-icon><UserFilled /></el-icon>
+          <span>我的门户 (自助)</span>
+        </el-menu-item>
+
         <el-sub-menu index="assets-group">
           <template #title>
             <el-icon><Box /></el-icon>
@@ -67,6 +73,10 @@
             <el-icon><Tickets /></el-icon>
             <span>软件与授权许可</span>
           </el-menu-item>
+          <el-menu-item index="/consumables">
+            <el-icon><Goods /></el-icon>
+            <span>耗材管理</span>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="agent-group">
@@ -99,6 +109,12 @@
         <el-menu-item index="/operation-logs">
           <el-icon><Memo /></el-icon>
           <span>操作日志 (审计)</span>
+        </el-menu-item>
+
+        <!-- P2 报表中心：管理视角聚合面（服务端 RBAC 收口） -->
+        <el-menu-item index="/reports">
+          <el-icon><TrendCharts /></el-icon>
+          <span>报表中心</span>
         </el-menu-item>
 
         <el-menu-item index="/settings">
@@ -188,17 +204,20 @@ const currentUser = computed(() => {
 const currentRouteTitle = computed(() => {
   const map = {
     '/dashboard': '总览大盘',
+    '/portal': '我的门户（员工自助）',
     '/assets': '硬件固定资产台账',
     '/dispatches': '外派出差终端管理',
     '/stocktakes': '盘点任务管理',
     '/asset-requests': '设备申请审批',
     '/depreciations': '折旧规则引擎',
     '/dimensions': '基础数据（维度库）',
+    '/consumables': '耗材管理',
     '/devices': '终端设备画像',
     '/changes': '硬件变更与预警中心',
     '/organization': '组织架构与人员',
     '/users': '系统用户与权限 (RBAC)',
     '/operation-logs': '操作日志审计',
+    '/reports': '报表中心',
     '/software': '软件资产与授权',
     '/settings': '系统与集成设置',
   }

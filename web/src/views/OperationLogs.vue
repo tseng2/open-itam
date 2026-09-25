@@ -90,6 +90,7 @@ const ACTION_OPTIONS = [
   'create', 'update', 'delete', 'login', 'login_failed',
   'import', 'return', 'cancel', 'approve', 'reject', 'start', 'finish',
   'rotate-token', 'off-book', 'restore-book', 'merge', 'recalculate',
+  'stock-in', 'stock-out', 'adjust',
 ]
 // 对象选项与服务端路由前缀一一对应（含公开面单独留痕的 auth）
 const RESOURCE_OPTIONS = [
@@ -109,6 +110,8 @@ const RESOURCE_OPTIONS = [
   { value: 'asset-repairs', label: '维修登记' },
   { value: 'storage-lendings', label: '移动存储' },
   { value: 'part-records', label: '配件记录' },
+  { value: 'licenses', label: '软件许可' },
+  { value: 'consumables', label: '耗材' },
   { value: 'auth', label: '登录认证' },
 ]
 
@@ -117,6 +120,7 @@ const ACTION_LABELS = {
   import: '批量导入', return: '归还', cancel: '作废', approve: '通过', reject: '驳回',
   start: '开始', finish: '完成', 'rotate-token': '换码', 'off-book': '销账转列管',
   'restore-book': '恢复在册', merge: '合并', recalculate: '重算净值',
+  'stock-in': '耗材入库', 'stock-out': '耗材出库', adjust: '库存调整',
 }
 
 function actionLabel(a) { return ACTION_LABELS[a] || a }

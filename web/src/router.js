@@ -1,12 +1,15 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import Dashboard from './views/Dashboard.vue'
+import MyPortal from './views/MyPortal.vue'
 import Assets from './views/Assets.vue'
 import Dispatches from './views/Dispatches.vue'
 import Stocktakes from './views/Stocktakes.vue'
 import AssetRequests from './views/AssetRequests.vue'
 import Depreciations from './views/Depreciations.vue'
 import Dimensions from './views/Dimensions.vue'
+import Consumables from './views/Consumables.vue'
 import OperationLogs from './views/OperationLogs.vue'
+import Reports from './views/Reports.vue'
 import Devices from './views/Devices.vue'
 import DeviceDetail from './views/DeviceDetail.vue'
 import Changes from './views/Changes.vue'
@@ -24,13 +27,16 @@ const router = createRouter({
     { path: '/', redirect: '/dashboard' },
     { path: '/login', component: Login },
     { path: '/dashboard', component: Dashboard },
+    { path: '/portal', component: MyPortal },
     { path: '/assets', component: Assets },
     { path: '/dispatches', component: Dispatches },
     { path: '/stocktakes', component: Stocktakes },
     { path: '/asset-requests', component: AssetRequests },
     { path: '/depreciations', component: Depreciations },
     { path: '/dimensions', component: Dimensions },
+    { path: '/consumables', component: Consumables },
     { path: '/operation-logs', component: OperationLogs },
+    { path: '/reports', component: Reports },
     { path: '/devices', component: Devices },
     { path: '/devices/:id', component: DeviceDetail },
     { path: '/changes', component: Changes },
