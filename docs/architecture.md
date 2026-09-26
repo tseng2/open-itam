@@ -253,16 +253,19 @@ Authorization: Bearer <device_token>
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `heartbeat_interval_sec` | 600（10 分钟） | 心跳上报间隔 |
-| `full_interval_sec` | 3600（60 分钟） | 全量采集间隔 |
+| `heartbeat_interval_sec` | 600（10 分钟，Agent 本地兜底） | 心跳上报间隔；服务端下发经 `agent_settings` 单例（默认 3600）覆盖（v0.2.6 起消费） |
+| `full_interval_sec` | 3600（60 分钟，Agent 本地兜底） | 全量采集间隔；服务端下发经 `agent_settings` 单例（默认 21600）覆盖（v0.2.6 起消费） |
 | `spool_scan_sec` | 30 | 离线队列扫描间隔 |
 | `failover_probe_sec` | 1800 | 备用链路下探测主服务器间隔 |
-| `offline_threshold_sec`（服务端） | 900（15 分钟） | 资产联系状态的离线判定阈值，容忍一次心跳丢失；A2 失联分层与 A4 超期/失联告警共用 |
+| `agent_settings.heartbeat_interval_sec`（服务端 DB 单例） | 3600（1 小时） | 心跳周期唯一源：设置页「Agent 采集与失联判定」维护，经 agent/config 与 ingest 响应双通道下发，保存即生效 |
+| `agent_settings.full_interval_sec`（服务端 DB 单例） | 21600（6 小时） | 全量上报周期唯一源；校验不能小于心跳周期 |
+| `agent_settings.offline_threshold_sec`（服务端 DB 单例） | 3900（65 分钟） | 失联判定阈值唯一源（**必须大于心跳周期**，保存校验）；A2 失联分层 / A4 告警 / 大盘 devices 三处共用。**2026-09-26 起 server.json 的 offline_threshold_sec / default_heartbeat_sec / default_full_sec 已废弃移除**（阈值/频率全迁 DB 单例，设置页保存即生效、无需重启） |
+| `agent_settings.company_province`（服务端 DB 单例） | 广东省 | 漫游判定的地理维基准（出口 IP 省份比对），与 ip2region v4 库名口径一致；空 = 跳过地理维判定 |
 | `jwt_secret`（服务端） | 未配置回落内置默认并启动告警 | JWT 签名密钥（任务 B 配置化）：`server.json` 优先、环境变量 `ITAGENT_JWT_SECRET` 兜底；GenerateToken/ParseToken/AuthMiddleware 签名零波及。**secret 变更后存量 token 全失效（401 → 前端跳登录）属预期**，生产必须显式配置 |
 | `license_expiring_days`（服务端） | 30 | 软件许可到期提醒窗口（天）：licensealert 引擎每小时扫描「到期日在 (now, now+N] 且未终止」的许可并提醒公司管理员（窗口口径与 licenses 列表 expiring_days 过滤同源） |
 | `software_overuse_cooldown_hours`（服务端） | 24 | 软件超用提醒冷却窗口（小时）：softwareaudit 合规引擎每小时比对受控池 × 终端软件安装，同一池项冷却窗内只投一次超用提醒 |
 
-优先级：**服务端下发 > 本地配置文件 > 内置默认**。服务端响应中的 `next_*_sec` 覆盖本地。
+优先级：**agent_settings 单例（服务端下发）> Agent 本地配置文件 > 内置默认**。服务端响应中的 `next_*_sec` / agent/config 的 `*_interval_sec` 均出自 agent_settings；老版本 Agent（≤0.2.5）不消费下发字段，沿用本地周期互不影响。
 
 ### 4.5 注册流程
 
@@ -477,6 +480,7 @@ sequenceDiagram
 | GET/POST/PUT/DELETE | `/api/v1/software-pools` | 受控软件池（阶段三）：列表登录可读（company_id 必填 + keyword 模糊+分页，带挂接许可名富化）/ 增改删仅 admin；名称同公司唯一 409（软删不占名）；license_id 挂接校验同公司 404、0/null 解除挂接，**池项不做席位余量校验**（超用正是引擎要发现的） |
 | GET | `/api/v1/software-compliance` | 软件合规报表（阶段三，**仅 admin**，报表中心先例）：company_id 必填 → 汇总卡 + 池项全量（含超用标记）+ 未受控商业软件分页（安装数降序）；比对口径单源 softwareaudit.BuildCompliance |
 | GET | `/api/v1/dashboard/summary` | 总览大盘轻聚合（**全员登录可读**，全集团跨公司口径，区别于 admin 单公司的 /reports/summary）：资产状态计数 + changes 未 ack 计数 + 终端活跃/失联三数 + Agent 版本分布 Top5 |
+| GET/PUT | `/api/v1/agent-settings` | Agent 采集与失联判定配置（**仅 admin**）：heartbeat_interval_sec / full_interval_sec / offline_threshold_sec / company_province；PUT 校验「阈值>心跳、full≥心跳、均正整数」，保存即生效（双通道下发：agent/config + ingest 响应）；GET 无行回落内置默认（3600/21600/3900/广东省） |
 | GET/PUT/DELETE | `/api/v1/licenses/{id}` | 授权详情 / 更新 / 删除（仅 admin；**席位被资产挂接时删除 409 带计数**） |
 | GET/POST | `/api/v1/consumables` | 耗材列表（P2：keyword/low_stock 库存预警过滤+分页，登录可读，带 low_stock 派生标记）/ 新增耗材（仅 admin；**建账库存恒 0**） |
 | PUT/DELETE | `/api/v1/consumables/{id}` | 编辑元数据（名称/规格/单位/预警线；**库存不经编辑面**）/ 删除（仅 admin；**有出入库流水时 409 带计数**） |
@@ -504,7 +508,7 @@ sequenceDiagram
 
 **外派登记契约（阶段五 A1）**：`asset_dispatches` 表 `{company_id, asset_id, borrower_name, destination, dispatched_at, expected_return_at, returned_at, isolation_offline, expect_wipe, status, remark}`；状态机 `10 外派中 → 20 已归还 / 30 已作废`；**一个资产同时仅允许一条 status=10 记录**（重复登记返回 409）；**超期为计算属性**（status=10 且 now > expected_return_at），不设独立状态位；`isolation_offline` 是保密现场"预期内离线"依据（A2 失联分层），`expect_wipe` 标记涉密客户格式化归还要求；创建/归还动作联动 AssetEvent 留痕（event_type：`dispatch` / `dispatch_return`，Title 汇总目的地与归期）；所有读写带 company_id 公司边界（跨公司按 404 处理）。
 
-**联系状态分层契约（阶段五 A2）**：资产列表响应带 `presence` 计算字段（不落库，`gorm:"-"`），由服务端按 **外派登记 × LastSeenAt × 离线阈值** 实时计算，前端只做渲染映射。五态判定顺序即优先级：`overdue 超期未归(高危)`（外派中且已过预计归期，催归优先于存活确认）→ `dispatch_offline 外派离线(预期内)`（外派中+IsolationOffline+未超期且离线，免告警）→ `missing 疑似失联`（无豁免且离线，保守报警）→ `roaming 漫游中`（在线且 PublicIP 非空粗判）→ `online 在线`。无 Agent 终端（Device 为空）不参与判定，presence 留空；外派未标隔离而离线归入疑似失联（管理员应核实或补登隔离标记）；判定核心为纯函数 `model.ResolvePresence`（A4 Webhook 扫描可复用）；离线阈值读 `offline_threshold_sec` 配置，禁止硬编码。
+**联系状态分层契约（阶段五 A2；2026-09-26 漫游判定升级为双维）**：资产列表响应带 `presence` 计算字段（不落库，`gorm:"-"`），由服务端按 **外派登记 × LastSeenAt × 失联阈值 × 网络环境** 实时计算，前端只做渲染映射。五态判定顺序即优先级：`overdue 超期未归(高危)`（外派中且已过预计归期，催归优先于存活确认）→ `dispatch_offline 外派离线(预期内)`（外派中+IsolationOffline+未超期且离线，免告警）→ `missing 疑似失联`（无豁免且离线，保守报警）→ `roaming 漫游中` → `online 在线`。无 Agent 终端（Device 为空）不参与判定，presence 留空；外派未标隔离而离线归入疑似失联（管理员应核实或补登隔离标记）；判定核心为纯函数 `model.ResolvePresence`（A4 Webhook 扫描复用）；失联阈值唯一源 `agent_settings.offline_threshold_sec`（经 `v1.EffectivePresenceTimeout` 实时读取，设置页保存即生效），禁止硬编码。**漫游双维（2026-09-26 升级，替代「PublicIP 非空」粗判——公司统一出口 NAT 下全部内网终端被误判漫游）**：`roaming = 本机 IP 是公网可路由地址（网络维：直连公网/4G/拨号） || 出口 IP GeoIP 解析为异省或海外（地理维）`；地理维基准是 `agent_settings.company_province`，GeoIP 数据源为 **ip2region v4 离线库（`internal/server/geoip`，xdb 单文件 go:embed 内嵌，纯 Go 零 CGO；region 段序：国家|省份|城市|ISP|国家代码，海外 IP 只取国家段触发漫游）**；解析不出（空段/库不可用/内网保留 IP）跳过地理维（宁漏报不误报）。已知边界：同城家宽与公司内网 GeoIP 无法区分（省级颗粒度极限）按在线处理；4G 基站跨省漂移靠省级宽口径容错。**假失联修复（2026-09-26）**：联系状态判定读 `agent_devices.last_seen_at`，此前只有 full 上报（1 小时周期）更新它而心跳（600s 级）不触碰——full 周期 > 失联阈值导致每小时必现「终端健康却判疑似失联」窗口；修复 = heartbeat ingest 同步刷新绑定行 `last_seen_at`（只刷时间戳，IP/硬件仍由 full 维护）。
 
 **硬件 Diff 自动比对契约（阶段五 A3）**：ingest full 上报时经 `syncToAssetLedger` 与 AssetVersion 当前基线快照比对，核心为纯函数 `api.compareHardware`（固定顺序输出变更描述）：内存总量（GB）→ 内置磁盘数量 → 磁盘序列号集合差（换盘检测：数量/容量相同仅 SN 变化的偷换场景；任一侧存在空 SN 视为采集不完整，跳过本轮 SN 比对，宁漏报不误报）→ CPU 数量 → CPU 型号集合差。**可移动介质（U 盘等 Removable）不参与比对**（日常插拔非硬件变更）。检测到变更且无待审核事件时自动生成 `hardware_change` AssetEvent（`ReviewStatus=20 待审核`，Description 含变更详情与当前快照）；**幂等语义**：待审核事件存在期间同一资产保持单条，管理员审核通过后基线更新、后续变更才会再次检测。审核流复用现有 `/api/v1/assets/{id}/events/{eid}/approve`。
 
@@ -542,7 +546,9 @@ sequenceDiagram
 
 **加密标记抽象契约（2026-09-26 落地）**：`assets.sec_encrypted` 与 `storage_lendings.sec_certified` 的语义是**「已被公司统一部署的终端加密系统纳管/认证」的通用布尔标记**——**加密产品名（绿盾等）不落码、不落库**：字段与文案层一律通用（「加密软件管理 / 已纳管」「加密认证 / 已认证」），具体产品归属公司管理制度与备注字段，**更换加密系统时代码零改动**。历史文档（system_blueprint）中的产品名仅作当时背景记录。Agent 侧注释提及的「绿盾环境」指用户公司真实终端环境事实（EDR 拦截解释器等），非系统绑定。
 
-**总览大盘契约（2026-09-26 落地，Dashboard mock 演示面清零收官）**：`GET /api/v1/dashboard/summary` 是大盘唯一数据源——**一次请求聚合全部数字**（避免前端拼 N 个请求），**全员登录可读**（大盘是全员工作台首页，不带 RoleMiddleware），**全集团跨公司口径**（不筛 company_id——与 admin 单公司的 /reports/summary 是两个面，报表口径红线不可直搬）。**口径单源纪律**：① 资产状态计数 = 台账全量（含报废）+ GORM 默认软删过滤（同列表口径），状态段位复用 `model.AssetStatusName`；② changes_pending 谓词与 `store.ListChangeEvents(includeAcked=false)` 单源（`acked = false`）；③ 终端活跃/失联公式与 `model.ResolvePresence` 完全一致（`now - last_seen > 阈值` 即失联），阈值经 SetupRouter 注入（源头 `offline_threshold_sec`，禁止前端/后端各自写死分钟数）；④ Agent 版本分布按注册终端总数计百分比（四舍五入整数，计数降序、同数字典序稳定），Top5 截断防病态多版本刷载荷。终端量级小（企业数百级），devices 直接拉轻量列 Go 侧聚合——规避跨驱动 SQL 时间比较方言（report.go 先例）。**U8 集成面移除（2026-09-26 拍板）**：采购订单只作台账溯源字段——`assets.u8_order_no` 文本字段保留（建账/编辑可录、详情抽屉可见、资产页全文搜索命中），供应商/采购时间/价格溯源由台账既有字段（supplier_id / purchase_date / original_price）承载，**不做 U8 API 对接**（CIYO 对标同口径：无 ERP 集成，采购信息即台账字段）；大盘「用友 U8 采购追踪」假卡与 Settings「用友 U8 v18 集成」假 tab 一并移除，禁止造假金额。**「AD 组织架构同步」假状态行移除**（无此功能，AD 目录同步属阶段二规划）。Web 端：顶部三卡（资产总数含在册/报废拆分、使用中含在库/维修拆分、待处理告警与变更可点跳 /changes）+ 实时终端与 Agent 状态卡（注册/活跃/失联三数 + 版本分布行 + 刷新按钮；空库 el-empty 空态，文案走 computed 规避 el-empty 内联三元中文引号坑）；拉取失败数字展示 '—'，刷新可重试。
+**总览大盘契约（2026-09-26 落地，Dashboard mock 演示面清零收官）**：`GET /api/v1/dashboard/summary` 是大盘唯一数据源——**一次请求聚合全部数字**（避免前端拼 N 个请求），**全员登录可读**（大盘是全员工作台首页，不带 RoleMiddleware），**全集团跨公司口径**（不筛 company_id——与 admin 单公司的 /reports/summary 是两个面，报表口径红线不可直搬）。**口径单源纪律**：① 资产状态计数 = 台账全量（含报废）+ GORM 默认软删过滤（同列表口径），状态段位复用 `model.AssetStatusName`；② changes_pending 谓词与 `store.ListChangeEvents(includeAcked=false)` 单源（`acked = false`）；③ 终端活跃/失联公式与 `model.ResolvePresence` 完全一致（`now - last_seen > 阈值` 即失联），阈值唯一源 agent_settings（`v1.EffectivePresenceTimeout` 实时读取，禁止写死分钟数）；④ Agent 版本分布按注册终端总数计百分比（四舍五入整数，计数降序、同数字典序稳定），Top5 截断防病态多版本刷载荷。终端量级小（企业数百级），devices 直接拉轻量列 Go 侧聚合——规避跨驱动时间比较方言（report.go 先例）。**U8 集成面移除（2026-09-26 拍板）**：采购订单只作台账溯源字段——`assets.u8_order_no` 文本字段保留（建账/编辑可录、详情抽屉可见、资产页全文搜索命中），供应商/采购时间/价格溯源由台账既有字段（supplier_id / purchase_date / original_price）承载，**不做 U8 API 对接**（CIYO 对标同口径：无 ERP 集成，采购信息即台账字段）；大盘「用友 U8 采购追踪」假卡与 Settings「用友 U8 v18 集成」假 tab 一并移除，禁止造假金额。**「AD 组织架构同步」假状态行移除**（无此功能，AD 目录同步属阶段二规划）。Web 端：顶部三卡（资产总数含在册/报废拆分、使用中含在库/维修拆分、待处理告警与变更可点跳 /changes）+ 实时终端与 Agent 状态卡（注册/活跃/失联三数 + 版本分布行 + 刷新按钮；空库 el-empty 空态，文案走 computed 规避 el-empty 内联三元中文引号坑）；拉取失败数字展示 '—'，刷新可重试。
+
+**Agent 采集与内外网判定契约（2026-09-26 落地；三类实测缺陷的修复收口）**：**① 采集频率配置面**——`agent_settings` DB 单例（ID 恒 1，webhook 单例先例）：`heartbeat_interval_sec` / `full_interval_sec` / `offline_threshold_sec` / `company_province` 四字段；设置页「Agent 采集与失联判定」tab 维护（分钟呈现/秒存储），PUT 校验「阈值>心跳（否则健康终端心跳间隔本身就击穿阈值全员假失联）、full≥心跳、均正整数」；**保存即生效**——服务端各判定点经 `v1.EffectiveAgentSettings()` 实时读库（无缓存，改配置不重启），下发走双通道（老栈 agent/config 响应 + ingest `next_*_sec`），**Agent v0.2.6 起在每次心跳拉 config 时动态调周期（clamp 60s~24h，老版本不消费互不影响）**；server.json 的 offline_threshold_sec / default_heartbeat_sec / default_full_sec 已废弃删除。**② 漫游误判修复（双维判定）**——见联系状态分层契约段。**③ 假失联修复**——见联系状态分层契约段。**④ 自更新链死路修复（.160 离线案根因收口）**——RunSelfApply 是服务停止后系统里唯一能拉起服务的组件（agent-watchdog 实为死代码从未运行、SCM failure recovery 只覆盖崩溃不覆盖正常 stop），**任何失败 return 前必须尽力重启服务（回滚旧包兜底）**，消灭「backup/replace 失败 → 服务已停且无人救 → 终端永久失联只能重装」的死路；updater.Apply 全路径写 update.log（下载/sha 校验失败同样留痕）。**已知运维注记**：AD 组织同步属阶段二规划（台式已加域、笔记本 home 版未加域待转专业版），内外网判定与 AD 无耦合。
 
 ---
 
