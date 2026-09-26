@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -17,21 +16,34 @@ import (
 	"itagent/internal/shared/protocol"
 )
 
-// Apply 执行更新流程，成功返回后调用方应立即退出进程
+// Apply 执行更新流程，成功返回后调用方应立即退出进程。
+// 全路径写 update.log（下载失败/校验失败同样留痕）——2026-09-26 排查
+// .160 终端自更新离线案时发现下载与校验失败只有进程内日志，现场无从考证
 func Apply(u *reporter.Uploader, info *protocol.UpdateInfo, installDir string) error {
 	updateDir := filepath.Join(installDir, "data", "update")
 	if err := os.MkdirAll(updateDir, 0o755); err != nil {
 		return err
+	}
+	logf := func(format string, args ...any) {
+		f, err := os.OpenFile(filepath.Join(updateDir, "update.log"),
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		fmt.Fprintf(f, time.Now().UTC().Format(time.RFC3339)+" "+format+"\n", args...)
 	}
 	newExe := filepath.Join(updateDir, "core-agent.new.exe")
 
 	// 已下载且校验通过的包直接复用：上次可能是脚本执行阶段失败
 	if !verifyFile(newExe, info.SHA256) {
 		if err := u.DownloadTo("/api/v1/agent/update/download", newExe); err != nil {
+			logf("download update v%s failed: %v", info.Version, err)
 			return fmt.Errorf("download update: %w", err)
 		}
 		if !verifyFile(newExe, info.SHA256) {
 			os.Remove(newExe)
+			logf("update package v%s sha256 mismatch", info.Version)
 			return fmt.Errorf("update package sha256 mismatch")
 		}
 	}
@@ -39,12 +51,10 @@ func Apply(u *reporter.Uploader, info *protocol.UpdateInfo, installDir string) e
 	// 由新包自己完成替换：解释器在服务进程里常被终端安全软件拦截，
 	// 换成自研二进制做 SCM 停启 + 文件替换，整条链不依赖外部解释器
 	if err := spawnApply(newExe, installDir, os.Getpid()); err != nil {
-		// 服务进程无可见 stderr，把失败原因落到 update 目录供现场排查
-		_ = os.WriteFile(filepath.Join(updateDir, "update.log"),
-			[]byte(time.Now().UTC().Format(time.RFC3339)+" spawn failed: "+err.Error()+"\n"), 0o644)
+		logf("spawn apply failed: %v", err)
 		return fmt.Errorf("spawn apply: %w", err)
 	}
-	log.Printf("updater spawned, agent exiting for update to v%s", info.Version)
+	logf("updater spawned for v%s, agent exiting", info.Version)
 	return nil
 }
 

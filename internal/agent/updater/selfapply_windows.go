@@ -42,8 +42,12 @@ func spawnApply(newExe, installDir string, parentPID int) error {
 	return nil
 }
 
-// RunSelfApply 新包自替换入口：等旧 Agent 退出 → 停看门狗与服务 →
-// 备份旧版 → 用自己覆盖 → 起服务（失败回滚），全过程写 update.log
+// RunSelfApply 新包自替换入口：等旧 Agent 退出 → 停服务 →
+// 备份旧版 → 用自己覆盖 → 起服务（失败回滚），全过程写 update.log。
+// 死路修复（2026-09-26，.160 离线案）：本函数是服务停止后系统里唯一
+// 能把它拉起的组件（watchdog 已被杀、SCM failure recovery 不覆盖
+// 正常 stop），因此任何失败 return 前都必须尽力把服务重启回去——
+// backup/replace 失败绝不允许留一个「已停且无人救」的服务
 func RunSelfApply(installDir string, parentPID int) error {
 	updateDir := filepath.Join(installDir, "data", "update")
 	logf := func(format string, args ...any) {
@@ -62,7 +66,7 @@ func RunSelfApply(installDir string, parentPID int) error {
 	waitProcessExit(parentPID, 60*time.Second)
 	logf("parent %d exited, applying update", parentPID)
 
-	// 停看门狗：避免其拉起旧服务与替换动作竞争
+	// 停看门狗：避免其拉起旧服务与替换动作竞争（若部署未启用则空转）
 	_ = exec.Command("taskkill", "/F", "/IM", "agent-watchdog.exe").Run()
 
 	m, err := mgr.Connect()
@@ -78,14 +82,18 @@ func RunSelfApply(installDir string, parentPID int) error {
 	}
 	defer s.Close()
 
+	// 之后所有失败路径服务已停：必须先救活服务再返回（回滚旧包兜底）
 	logf("service stop requested, stopped=%v", StopService(s))
 
 	if err := copyFile(target, backup); err != nil {
-		logf("backup old exe: %v", err)
+		logf("backup old exe: %v; restart service anyway", err)
+		_ = s.Start()
 		return err
 	}
 	if err := copyFile(newExe, target); err != nil {
-		logf("replace exe: %v", err)
+		logf("replace exe: %v; rollback and restart", err)
+		_ = copyFile(backup, target)
+		_ = s.Start()
 		return err
 	}
 	if err := s.Start(); err != nil {

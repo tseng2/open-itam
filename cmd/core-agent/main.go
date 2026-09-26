@@ -21,7 +21,7 @@ import (
 	"itagent/internal/shared/protocol"
 )
 
-const agentVersion = "0.2.5"
+const agentVersion = "0.2.6"
 
 var (
 	cfgPathFlag = flag.String("config", "configs/agent.json", "path to agent config")
@@ -161,13 +161,16 @@ func innerMain(cfgPath string, done <-chan struct{}) {
 	} else {
 		syncProtectionPolicy(cfgPath)
 	}
-
 	spool := reporter.NewSpool(cfg.SpoolDir)
 	ipcSrv := ipc.NewServer(cfg, col, spool, u)
 	go ipcSrv.Serve(context.Background())
 
 	log.Printf("ITAgent v%s dev=%s", agentVersion, cfg.DeviceID)
 
+	// 采集周期：本地缺省兜底（服务端未下发/老版本时维持既有节奏），
+	// 服务端 agent_settings 下发后按下次心跳生效动态调整（0.2.6 起）
+	hbInterval := 10 * time.Minute
+	fullInterval := time.Hour
 	hb := time.Now()
 	full := time.Now().Add(15 * time.Second)
 	tick := time.NewTicker(2 * time.Second)
@@ -186,41 +189,77 @@ func innerMain(cfgPath string, done <-chan struct{}) {
 		case now := <-tick.C:
 			if now.After(hb) {
 				enqueue(spool, cfg, col, "heartbeat")
-				syncProtectionPolicy(cfgPath)
-				hb = now.Add(10 * time.Minute)
+				// 每次心跳顺带拉取策略与频率：设置页改频率在此生效
+				if hbSec, fullSec := syncProtectionPolicy(cfgPath); hbSec > 0 || fullSec > 0 {
+					if d := clampInterval(hbSec); d > 0 {
+						hbInterval = d
+					}
+					if d := clampInterval(fullSec); d > 0 {
+						fullInterval = d
+					}
+				}
+				hb = now.Add(hbInterval)
 			}
 			if now.After(full) {
 				enqueue(spool, cfg, col, "full")
-				full = now.Add(time.Hour)
+				full = now.Add(fullInterval)
 			}
 		}
 	}
 }
 
-// syncProtectionPolicy 拉取服务端下发的防护策略并持久化到注册表（HKLM→HKCU 降级）。
-// 每次从原子写的配置文件重读 token/deviceID 构造 Uploader，避免与注册 goroutine 的内存竞争；
-// 拉取或解析失败时保持本地既有策略（fail-closed），仅记录日志
-func syncProtectionPolicy(cfgPath string) {
+// syncProtectionPolicy 拉取服务端下发的防护策略并持久化到注册表（HKLM→HKCU 降级），
+// 同时解析采集频率下发（heartbeat_interval_sec / full_interval_sec，0 = 服务端
+// 未下发或老版本，保持本地周期）。每次从原子写的配置文件重读 token/deviceID
+// 构造 Uploader，避免与注册 goroutine 的内存竞争；拉取或解析失败时保持
+// 本地既有策略（fail-closed），仅记录日志。返回值即本次下发的频率（秒），
+// 调用方据此动态调整采集周期（设置页保存即生效，无需重启 Agent）
+func syncProtectionPolicy(cfgPath string) (heartbeatSec, fullSec int) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil || cfg.DeviceToken == "" {
-		return
+		return 0, 0
 	}
 	u := reporter.NewUploader(cfg.ServerPrimary, cfg.ServerBackup, cfg.DeviceID, cfg.DeviceToken, nil)
 	body, err := u.FetchConfig()
 	if err != nil {
 		log.Printf("sync protection: %v", err)
-		return
+		return 0, 0
 	}
 	p, err := protection.ParseServerConfig(body)
 	if err != nil {
 		log.Printf("sync protection: %v", err)
-		return
+		return 0, 0
 	}
 	if err := protection.Persist(p); err != nil {
 		log.Printf("sync protection: %v", err)
-		return
+		return 0, 0
 	}
 	log.Printf("protection policy synced: quit=%v uninstall=%v", p.Quit.Enabled, p.Uninstall.Enabled)
+
+	// 采集频率宽容解析：老服务端无字段 / 缺省 → 0 → 保持本地周期
+	var freq struct {
+		HeartbeatIntervalSec int `json:"heartbeat_interval_sec"`
+		FullIntervalSec      int `json:"full_interval_sec"`
+	}
+	_ = json.Unmarshal(body, &freq)
+	return freq.HeartbeatIntervalSec, freq.FullIntervalSec
+}
+
+// clampInterval 服务端下发的采集周期收敛到安全区间：
+// [60s, 24h]——过小会打爆服务端，过大形同停摆；非法值（0/负）返回 0
+// 表示保持现有周期不变
+func clampInterval(sec int) time.Duration {
+	if sec <= 0 {
+		return 0
+	}
+	d := time.Duration(sec) * time.Second
+	if d < time.Minute {
+		return time.Minute
+	}
+	if d > 24*time.Hour {
+		return 24 * time.Hour
+	}
+	return d
 }
 
 func enqueue(spool *reporter.Spool, cfg config.Config, col *collector.Collector, typ string) {
