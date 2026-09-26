@@ -8,6 +8,7 @@ import (
 
 	"itagent/internal/server/licensealert"
 	"itagent/internal/server/model"
+	"itagent/internal/server/softwareaudit"
 	"itagent/internal/server/store"
 	"itagent/internal/server/webhook"
 )
@@ -15,6 +16,7 @@ import (
 // 阶段五收官 · 消息中心事件源扩展（三类运营提醒 → 公司管理员）：
 // A4 告警联动站内信（webhook 引擎注入）、软件许可到期提醒
 //（licensealert 引擎注入）、耗材低库存沿触发（consumable postTxn 旁路）。
+// 阶段三追加软件超用提醒（softwareaudit 引擎注入）。
 // 引擎场景无 gin 上下文，经 Notifier 函数注入组装（webhook ↔ api/v1
 // 循环依赖规避：引擎包只定义回调类型，收件人策略与文案收敛在本包）
 
@@ -84,6 +86,23 @@ func NewLicenseExpiringNotifier() licensealert.Notifier {
 				l.Name, daysLeft, l.ExpirationDate.Format("2006-01-02")),
 			Resource:   "licenses",
 			ResourceID: strconv.FormatInt(l.ID, 10),
+		})
+		return err
+	}
+}
+
+// NewSoftwareOveruseNotifier 软件超用提醒投递闭包（阶段三合规引擎注入）：
+// 比对口径与冷却去重在 softwareaudit 引擎侧，本闭包只管扇出与文案
+func NewSoftwareOveruseNotifier() softwareaudit.Notifier {
+	return func(ctx context.Context, pool model.SoftwarePool, installs, totalSeats int64) error {
+		_, err := notifyCompanyAdminsCtx(ctx, model.Notification{
+			CompanyID:  pool.CompanyID,
+			Type:       model.NotificationTypeSoftwareOveruse,
+			Title:      "软件超用提醒",
+			Content: fmt.Sprintf("受控软件「%s」当前安装 %d 台终端，已超过挂接许可席位 %d，请核查授权或扩容（合规报表见软件与授权许可页）",
+				pool.Name, installs, totalSeats),
+			Resource:   "software",
+			ResourceID: strconv.FormatInt(pool.ID, 10),
 		})
 		return err
 	}

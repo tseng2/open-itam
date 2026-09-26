@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"itagent/internal/server/api"
 	"itagent/internal/server/api/middleware"
 	v1 "itagent/internal/server/api/v1"
 	"itagent/internal/server/depreciation"
 	"itagent/internal/server/licensealert"
+	"itagent/internal/server/softwareaudit"
 	"itagent/internal/server/store"
 	"itagent/internal/server/ui"
 	"itagent/internal/server/webhook"
@@ -37,6 +39,9 @@ type serverConfig struct {
 	JWTSecret string `json:"jwt_secret"`
 	// 软件许可到期提醒窗口（天）：0 = 默认 30 天（licensealert 引擎）
 	LicenseExpiringDays int `json:"license_expiring_days"`
+	// 软件超用提醒冷却窗口（小时）：0 = 默认 24 小时（softwareaudit
+	// 合规引擎——同一池项冷却窗内只投一次提醒）
+	SoftwareOveruseCooldownHours int `json:"software_overuse_cooldown_hours"`
 }
 
 func main() {
@@ -127,6 +132,13 @@ func main() {
 	// 提醒公司管理员（注入 v1 闭包扇出；窗口去重见 licensealert 契约）
 	licEngine := licensealert.NewEngine(db, st, cfg.LicenseExpiringDays, v1.NewLicenseExpiringNotifier())
 	go licEngine.Run(engineCtx, licensealert.DefaultScanInterval)
+
+	// 阶段三软件合规引擎：每小时比对受控池 × 终端软件安装，超用池项
+	// 经冷却去重提醒公司管理员（注入 v1 闭包扇出；未受控清单只进报表
+	// 不投通知，口径见契约文档）
+	swEngine := softwareaudit.NewEngine(db, st,
+		time.Duration(cfg.SoftwareOveruseCooldownHours)*time.Hour, v1.NewSoftwareOveruseNotifier())
+	go swEngine.Run(engineCtx, softwareaudit.DefaultScanInterval)
 
 	log.Printf("itagent server listening on %s, db=%s", cfg.Listen, cfg.DBPath)
 	if err := http.ListenAndServe(cfg.Listen, root); err != nil {
