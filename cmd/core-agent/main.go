@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -21,7 +22,7 @@ import (
 	"itagent/internal/shared/protocol"
 )
 
-const agentVersion = "0.2.6"
+const agentVersion = "0.2.7"
 
 var (
 	cfgPathFlag = flag.String("config", "configs/agent.json", "path to agent config")
@@ -62,6 +63,24 @@ func main() {
 		return
 	}
 	runConsole(*cfgPathFlag)
+}
+
+// setupLogging 服务进程没有 stdout，log.Printf 输出会全部丢失——
+// 0.2.5 时代 .160 终端两次心跳循环死亡均因无日志死因不可考（2026-09-26 排查案），
+// 落盘到 logs/agent.log 供死后现场排查；失败时保持 stdout 行为不影响运行。
+// 心跳级日志每天 KB 量级，不做轮转
+func setupLogging() {
+	dir := updateExeInstallDir()
+	logsDir := filepath.Join(dir, "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(logsDir, "agent.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	log.SetOutput(io.MultiWriter(f, os.Stdout))
 }
 
 // updateExeInstallDir 从更新包位置推导安装目录：data/update/x.exe → 上三级

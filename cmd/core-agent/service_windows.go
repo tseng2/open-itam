@@ -19,6 +19,7 @@ func tryRunAsService(cfgPath string, force bool) bool {
 	if err != nil || (!isSvc && !force) {
 		return false
 	}
+	setupLogging() // 服务模式无 stdout，落盘日志供死后排查（0.2.7 起）
 	if err := svc.Run(serviceName, &agentService{cfgPath: cfgPath}); err != nil {
 		log.Printf("service run: %v", err)
 	}
