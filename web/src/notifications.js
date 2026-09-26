@@ -7,15 +7,18 @@ export const NOTIFICATION_ROUTES = {
   assets: '/assets',
   consumables: '/consumables',
   licenses: '/software',
+  software: '/software',
 }
 
-// 四类事件源中文映射（asset_request 设备申请 / asset_alert 资产告警 /
-// consumable_low_stock 耗材预警 / license_expiring 许可到期）；未知类型原样展示
+// 五类事件源中文映射（asset_request 设备申请 / asset_alert 资产告警 /
+// consumable_low_stock 耗材预警 / license_expiring 许可到期 /
+// software_overuse 软件超用——阶段三合规引擎）；未知类型原样展示
 export const NOTIFICATION_TYPE_TEXTS = {
   asset_request: '设备申请',
   asset_alert: '资产告警',
   consumable_low_stock: '耗材预警',
   license_expiring: '许可到期',
+  software_overuse: '软件超用',
 }
 
 // 类型标签色（消息中心页过滤与列表渲染用）
@@ -24,6 +27,7 @@ export const NOTIFICATION_TYPE_TAGS = {
   asset_alert: 'danger',
   consumable_low_stock: 'warning',
   license_expiring: 'warning',
+  software_overuse: 'danger',
 }
 
 export function notificationRoute(resource) {
