@@ -16,7 +16,7 @@ type StorageLending struct {
 	Quantity   int        `gorm:"default:1" json:"quantity"`                   // 领用数量
 	ReturnDate *time.Time `json:"return_date"`                                 // 归还日期
 	ReturnQty  int        `json:"return_qty"`                                  // 归还数量
-	SecCertified bool     `gorm:"default:false" json:"sec_certified"`          // 绿盾认证
+	SecCertified bool     `gorm:"default:false" json:"sec_certified"`          // 加密系统认证（通用标记，产品名不落码）
 	Remark     string     `gorm:"type:text" json:"remark"`                     // 备注
 }
 

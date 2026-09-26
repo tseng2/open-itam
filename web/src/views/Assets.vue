@@ -356,7 +356,7 @@
           </el-descriptions-item>
           <el-descriptions-item label="加密软件管理">
             <el-tag :type="currentAsset.sec_encrypted ? 'success' : 'info'" size="small">
-              {{ currentAsset.sec_encrypted ? '已纳管（绿盾）' : '否' }}
+              {{ currentAsset.sec_encrypted ? '已纳管' : '否' }}
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="备注">
@@ -745,7 +745,8 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="加密软件管理">
-              <el-switch v-model="form.sec_encrypted" active-text="已纳管（绿盾）" inactive-text="否" />
+              <el-switch v-model="form.sec_encrypted" active-text="已纳管" inactive-text="否" />
+              <div class="form-tip">指已被公司统一部署的终端加密系统纳管（具体产品见管理规范，系统不绑定品牌）</div>
             </el-form-item>
           </el-col>
         </el-row>

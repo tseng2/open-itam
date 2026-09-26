@@ -3,7 +3,7 @@
     <div class="page-header">
       <div class="title-area">
         <h2>移动存储领用</h2>
-        <span class="subtitle">U 盘 / 移动硬盘等领用与归还登记：领用建账、归还回填归期与数量；绿盾认证标记加密合规</span>
+        <span class="subtitle">U 盘 / 移动硬盘等领用与归还登记：领用建账、归还回填归期与数量；加密认证标记加密合规</span>
       </div>
       <div class="actions">
         <el-button v-if="isAdmin" type="primary" @click="openCreateDialog">
@@ -61,7 +61,7 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column label="绿盾认证" width="90" align="center">
+        <el-table-column label="加密认证" width="90" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.sec_certified" type="success" size="small">已认证</el-tag>
             <span v-else class="empty-cell">—</span>
@@ -117,9 +117,9 @@
         <el-form-item label="数量">
           <el-input-number v-model="form.quantity" :min="1" :max="99999" style="width: 200px" />
         </el-form-item>
-        <el-form-item label="绿盾认证">
+        <el-form-item label="加密认证">
           <el-switch v-model="form.sec_certified" />
-          <div class="form-tip">开启表示该设备已通过绿盾加密认证</div>
+          <div class="form-tip">开启表示该设备已通过公司统一加密系统认证（具体产品见管理规范，系统不绑定品牌）</div>
         </el-form-item>
         <template v-if="editMode">
           <el-form-item label="归还日期">

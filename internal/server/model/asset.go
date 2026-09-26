@@ -141,7 +141,7 @@ type Asset struct {
 	OffBook   bool       `gorm:"default:false;index" json:"off_book"` // 财务销账标记（账销物留）
 	OffBookAt *time.Time `json:"off_book_at"`                        // 销账日期
 
-	SecEncrypted   bool       `gorm:"default:false" json:"sec_encrypted"`                     // 加密软件管理（是否绿盾纳管）
+	SecEncrypted   bool       `gorm:"default:false" json:"sec_encrypted"`                     // 终端加密系统纳管标记（通用，产品名不落码）
 	Remark         string     `gorm:"type:text" json:"remark"`                                // 备注
 	Device         *Device    `gorm:"foreignKey:AssetID" json:"device,omitempty"`             // 关联绑定的动态采集设备
 }
