@@ -43,17 +43,25 @@ func persistAt(root registry.Key, data string) error {
 // Load 从注册表读回防护策略（配置文件丢失或服务端不可达时的本地凭据通道）
 func Load() (Policy, bool) {
 	for _, root := range []registry.Key{registry.LOCAL_MACHINE, registry.CURRENT_USER} {
-		k, err := registry.OpenKey(root, regPath, registry.QUERY_VALUE)
-		if err != nil {
-			continue
-		}
-		v, _, err := k.GetStringValue(regValueProtection)
-		k.Close()
-		if err == nil && v != "" {
-			if p, ok := parsePersisted(v); ok {
-				return p, true
-			}
+		if p, ok := loadAt(root); ok {
+			return p, true
 		}
 	}
 	return Policy{}, false
+}
+
+// loadAt 从指定根键读回防护策略；键/值缺失或不可解析按不存在处理。
+// 测试经本函数把往返断言收在自控的 HKCU 内——装有生产 Agent 的开发机
+// HKLM 会有真策略（Load 是 HKLM 优先），经 Load 断言会永远对不上
+func loadAt(root registry.Key) (Policy, bool) {
+	k, err := registry.OpenKey(root, regPath, registry.QUERY_VALUE)
+	if err != nil {
+		return Policy{}, false
+	}
+	defer k.Close()
+	v, _, err := k.GetStringValue(regValueProtection)
+	if err != nil || v == "" {
+		return Policy{}, false
+	}
+	return parsePersisted(v)
 }
