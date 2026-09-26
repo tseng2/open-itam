@@ -90,7 +90,7 @@
   - [x] A1 外派登记：新表 `asset_dispatches`（预计归期/隔离级别/预期格式化标记）+ API + UI。（2026-09-24 完成）
   - [x] A2 失联语义分层：外派离线(预期内) / 超期未归(高危) / 疑似失联 / 漫游中（展示规则，零表结构变更）。（2026-09-24 完成；2026-09-26 漫游双维升级 + 同日再升级**市级比对按公司基准**——`companies.region`「省|市」地理维基准（组织页维护）、同省异市也算漫游、多公司各归各基准，geoip.RegionOf 三段返回）
   - [x] A3 硬件 Diff 自动比对：ingest 比对 AssetVersion 基线 → 自动 hardware_change 事件（待审核）+ 标红。（2026-09-24 完成）
-  - [x] A4 超期/失联 Webhook 告警（消息中心首场景切片）。（2026-09-24 完成：DB 配置 + Ticker 定时扫描 + HMAC-SHA256 签名 + 冷却去重，仅 WebHook 单通道）
+  - [x] A4 超期/失联 Webhook 告警（消息中心首场景切片）。（2026-09-24 完成：DB 配置 + Ticker 定时扫描 + HMAC-SHA256 签名 + 冷却去重，仅 WebHook 单通道；阶段五收官扩站内信双通道；**2026-09-26 GeoIP 二期扩异地漫游告警 `geo_roaming`**——触发口径 = 全部 presence=roaming，通知所属公司管理员，通知类型独立第六类（消息中心独立过滤），冷却窗独立 server.json `geo_roaming_cooldown_hours` 默认 24h 不复用 cooldown_minutes，双通道同模式（geo_roaming/notify_geo_roaming 双键），判定依据经 Asset.RoamingReason transient 字段单源直读）
 - [ ] **P0-β 复刻线：CIYO 对标三件套**
   - [x] 盘点任务：`stocktakes`/`stocktake_items` 状态机 + 标签 PDF + 免登录移动扫码页。（2026-09-24 完成：一次性盘点码只存哈希 + IP 限流 + 白名单视图，项目首个非 JWT 面；核对"正常"自动确认 pending 硬件变更）
   - [x] 设备申请审批流：审批即绑定领用人（单事务）。（2026-09-24 完成：审批+绑定+台账流转+assign 履历同事务，竞争申请 409 回滚；user 视角越权收口）
