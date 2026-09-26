@@ -33,6 +33,12 @@
 - [ ] 从 AD 自动同步组织与人员名单
 - [ ] Logon_user 关联匹配逻辑
 
+## 阶段三：软件合规与深度采集
+
+- [x] **软件合规比对：受控软件库 × Agent 采集**（2026-09-26 完成，CIYO/Snipe-IT 均无此能力的自研差异化项：① 数据地基 `device_software`——软件清单此前只在 reports/snapshots 原始 JSON 搭车、无结构化消费，阶段三起 full 上报（每小时）经 `syncDeviceSoftware` 按终端全量覆盖落库（单事务先删后插、空名键不入、公司归属取绑定资产、未绑定终端不参与统计），旁路失败不阻塞上报；② `software_pools` 受控池——入池即受控，名称同公司唯一 409，license_id 可空挂接做席位来源（**池项不做席位余量校验，超用正是引擎要发现的**），许可删除被资产或池项挂接 409；③ `internal/server/softwareaudit` 纯函数包 + 引擎——匹配口径单源（精确优先、包含匹配取最长池名）、系统组件白名单降噪（防误伤：不能用裸 intel，IntelliJ IDEA 会中招）、超用 = 挂接许可且去重安装终端数 > 席位，引擎每小时 + 启动即扫，超用池项经 `software_overuse` 冷却键（默认 24h，server.json `software_overuse_cooldown_hours` 可配）提醒公司管理员，未受控商业软件清单只进报表不投通知；④ API `/api/v1/software-pools`（读面登录写面 admin）+ `/api/v1/software-compliance`（admin-only 报表）+ 通知第五类 software_overuse 与 resource=software 跳转；⑤ Web 软件与授权许可页扩三 tab（授权许可池零回归迁移 / 受控软件池 CRUD / 合规审计四卡两表）。验证：softwareaudit 纯函数 + 引擎 10 项、v1 集成 4 项（CRUD/RBAC/报表口径/许可删除拦截）、ingest 落库 e2e 1 项全绿；go vet/build/test 全量零回归 + npm build ✅）
+- [ ] macOS 全量采集与部署（原 P5）
+- [ ] 灰度下发与远程脚本执行（原 P6/P7）
+
 ## 阶段五：ITAM 业务闭环（当前优先，2026-09-24 起）
 
 ### P0-α 差异化线：长期出差终端管理（推荐顺序 A1 → A2 → A3 → A4，✅ 已全部完成 2026-09-24）

@@ -72,7 +72,7 @@
 
 ### 阶段三：软件合规与深度采集（Mac 与 进阶）
 - [ ] **macOS 全量支持**：补齐 macOS Agent 采集与部署（原 P5）。
-- [ ] **软件 License 管理**：在后台建立受控软件库，与 Agent 采集的软件进行比对审计。
+- [x] **软件 License 管理**：在后台建立受控软件库，与 Agent 采集的软件进行比对审计。（2026-09-26 完成：`software_pools` 受控池 + `device_software` 软件清单结构化落库（此前只在 reports/snapshots 原始 JSON 搭车）+ softwareaudit 引擎（每小时比对、超用站内信冷却去重）+ `/software-compliance` 合规报表 + 软件页三 tab；匹配/白名单/超用判定纯函数单源，详见 architecture.md 软件合规比对契约段）
 - [x] **自动更新**：Agent 全自动更新闭环已完成并实测（0.2.5：manifest 探测 → 下载 → 二进制自应用，零解释器依赖）。
 - [ ] **灰度下发与推送**：更新控制与基础远程脚本执行（原 P6/P7）。
 
