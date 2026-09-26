@@ -1,56 +1,44 @@
 <template>
   <div class="dashboard-view">
-    <!-- 顶部核心指标看板 -->
+    <!-- 顶部核心指标看板：真实数据（/api/v1/dashboard/summary 全员轻聚合，全集团口径）。
+         「用友 U8 采购追踪」卡已移除：U8 单号仅是台账溯源字段（资产页可录/可查），无集成面 -->
     <el-row :gutter="16" class="metric-row">
-      <el-col :span="6">
+      <el-col :span="8">
         <el-card shadow="hover" class="stat-card blue">
           <div class="stat-header">
             <span class="stat-title">全集团资产总数</span>
             <el-icon class="stat-icon"><Monitor /></el-icon>
           </div>
-          <div class="stat-value">1,248 <span class="unit">台</span></div>
+          <div class="stat-value">{{ fmtNum(assets.total) }} <span class="unit">台</span></div>
           <div class="stat-footer">
-            <span class="trend up">较上月 +32 台</span>
-            <span class="sub">在线率 96.4%</span>
+            <span>在册 {{ fmtNum(onBookAssets) }} 台</span>
+            <span>已报废 {{ fmtNum(assets.scrapped) }} 台</span>
           </div>
         </el-card>
       </el-col>
-      <el-col :span="6">
+      <el-col :span="8">
         <el-card shadow="hover" class="stat-card green">
           <div class="stat-header">
             <span class="stat-title">使用中 (已领用)</span>
             <el-icon class="stat-icon"><User /></el-icon>
           </div>
-          <div class="stat-value">1,120 <span class="unit">台</span></div>
+          <div class="stat-value">{{ fmtNum(assets.in_use) }} <span class="unit">台</span></div>
           <div class="stat-footer">
-            <span>在库闲置 98 台</span>
-            <span>维修中 30 台</span>
+            <span>在库闲置 {{ fmtNum(assets.stock) }} 台</span>
+            <span>维修中 {{ fmtNum(assets.repair) }} 台</span>
           </div>
         </el-card>
       </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card purple">
-          <div class="stat-header">
-            <span class="stat-title">用友 U8 采购追踪</span>
-            <el-icon class="stat-icon"><ShoppingBag /></el-icon>
-          </div>
-          <div class="stat-value">¥ 482.5 <span class="unit">万</span></div>
-          <div class="stat-footer">
-            <span>关联 U8 订单 184 笔</span>
-            <el-tag size="small" type="success" effect="plain">已全量对齐</el-tag>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card orange">
+      <el-col :span="8">
+        <el-card shadow="hover" class="stat-card orange clickable" @click="router.push('/changes')">
           <div class="stat-header">
             <span class="stat-title">待处理告警与变更</span>
             <el-icon class="stat-icon"><WarningFilled /></el-icon>
           </div>
-          <div class="stat-value text-danger">3 <span class="unit">起</span></div>
+          <div class="stat-value text-danger">{{ fmtNum(changesPending) }} <span class="unit">起</span></div>
           <div class="stat-footer">
-            <span>SMART 硬盘告警 1 起</span>
-            <span>内存变更 2 起</span>
+            <span>全集团未确认事件</span>
+            <span>点击进入处理队列 →</span>
           </div>
         </el-card>
       </el-col>
@@ -84,25 +72,27 @@
           <template #header>
             <div class="card-header">
               <span class="title">实时终端与 Agent 状态</span>
-              <el-tag size="small" type="success" effect="light">服务正常</el-tag>
+              <el-button link size="small" :loading="loading" @click="fetchSummary">刷新</el-button>
             </div>
           </template>
-          <div class="agent-summary">
+          <!-- 空态用 computed 承载文案：el-empty 的 :description 内联三元含中文引号会炸（既有坑） -->
+          <el-empty v-if="hasSummary && devices.total === 0" :description="agentEmptyText" />
+          <div class="agent-summary" v-else>
             <div class="summary-item">
-              <span class="label">今日活跃上报终端</span>
-              <span class="num text-primary">1,086 台</span>
+              <span class="label">注册终端总数</span>
+              <span class="num">{{ fmtNum(devices.total) }} 台</span>
             </div>
             <div class="summary-item">
-              <span class="label">超过 7 天未上报</span>
-              <span class="num text-warning">24 台</span>
+              <span class="label">心跳活跃终端（阈值内上报）</span>
+              <span class="num text-primary">{{ fmtNum(devices.active) }} 台</span>
             </div>
             <div class="summary-item">
-              <span class="label">AD 组织架构同步</span>
-              <span class="num text-success">已同步 (今日 03:00)</span>
+              <span class="label">失联终端（超阈值未上报）</span>
+              <span class="num text-warning">{{ fmtNum(devices.missing) }} 台</span>
             </div>
-            <div class="summary-item">
-              <span class="label">最新 Agent 客户端</span>
-              <span class="num">v0.2.5 (在线终端 94%)</span>
+            <div class="summary-item" v-for="v in topAgentVersions" :key="v.version">
+              <span class="label">Agent {{ v.version }}</span>
+              <span class="num">{{ fmtNum(v.count) }} 台 ({{ v.percent }}%)</span>
             </div>
           </div>
         </el-card>
@@ -112,12 +102,45 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api'
+
+const router = useRouter()
+
+// 总览大盘汇总：后端一次聚合（资产状态计数 + changes 未 ack + 终端活跃/失联
+// + Agent 版本分布），失败时数字展示 '—'，刷新按钮可重试。
+// 失联阈值由服务端 offline_threshold_sec 决定，前端不写死分钟数
+const summary = ref(null)
+const loading = ref(false)
+
+const assets = computed(() => summary.value?.assets || {})
+const devices = computed(() => summary.value?.devices || {})
+const agentVersions = computed(() => summary.value?.agent_versions || [])
+const changesPending = computed(() => summary.value?.changes_pending)
+const hasSummary = computed(() => !!summary.value)
+// 在册 = 台账全量 - 已报废（与报表中心在册口径一致）
+const onBookAssets = computed(() => Math.max(0, (assets.value.total || 0) - (assets.value.scrapped || 0)))
+const topAgentVersions = computed(() => agentVersions.value.slice(0, 3))
+const agentEmptyText = computed(() => '暂无终端注册上报')
+
+function fmtNum(n) {
+  if (n === null || n === undefined) return '—'
+  return Number(n).toLocaleString('zh-CN')
+}
+
+async function fetchSummary() {
+  loading.value = true
+  try {
+    const res = await api('/api/v1/dashboard/summary')
+    summary.value = res.data || null
+  } catch { /* 拉取失败保持 '—' 展示，刷新可重试 */ }
+  finally { loading.value = false }
+}
 
 // 各子公司资产分布：真实数据（原 mock 写死「东莞/苏州」已废）——
 // 拉公司列表后逐公司查资产 total（公司量级小，串行可接受），
-// percent 按资产数占比取整。总览大盘其余卡片实装属独立任务
+// percent 按资产数占比取整
 const companyDistribution = ref([])
 
 async function fetchCompanyDistribution() {
@@ -140,6 +163,7 @@ async function fetchCompanyDistribution() {
 }
 
 onMounted(() => {
+  fetchSummary()
   fetchCompanyDistribution()
 })
 </script>
@@ -174,6 +198,9 @@ onMounted(() => {
 }
 .stat-card.orange {
   background: linear-gradient(135deg, #9a3412 0%, #f97316 100%);
+}
+.stat-card.clickable {
+  cursor: pointer;
 }
 .stat-header {
   display: flex;
@@ -271,4 +298,5 @@ onMounted(() => {
 .text-primary { color: #2563eb; }
 .text-success { color: #059669; }
 .text-warning { color: #d97706; }
+.text-danger { color: #fff; }
 </style>

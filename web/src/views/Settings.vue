@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <h2>系统与集成设置</h2>
-        <span class="subtitle">用友 U8 凭据与采购单对接、AD 域控同步、数据字典与二维码规则</span>
+        <span class="subtitle">终端防护、Webhook 告警、AD 目录服务（规划中）与标签打印规则</span>
       </div>
     </div>
 
@@ -111,27 +111,6 @@
         </el-form>
       </el-tab-pane>
 
-      <el-tab-pane label="用友 U8 v18 集成">
-        <el-form label-width="180px" style="max-width: 680px; margin-top: 16px">
-          <el-form-item label="U8 API 网关地址">
-            <el-input v-model="u8.gateway" placeholder="http://u8-api.internal:8080" />
-          </el-form-item>
-          <el-form-item label="U8 账套号 (AccID)">
-            <el-input v-model="u8.accId" placeholder="如: 001" />
-          </el-form-item>
-          <el-form-item label="U8 OpenAPI AppKey">
-            <el-input v-model="u8.appKey" />
-          </el-form-item>
-          <el-form-item label="采购单同步状态">
-            <el-switch v-model="u8.autoSync" active-text="开启每日定时拉取新采购单入库" />
-          </el-form-item>
-          <el-form-item>
-            <el-button type="primary">保存配置</el-button>
-            <el-button>测试连通性</el-button>
-          </el-form-item>
-        </el-form>
-      </el-tab-pane>
-
       <el-tab-pane label="AD / 目录服务 (Identity Hub)">
         <el-form label-width="180px" style="max-width: 680px; margin-top: 16px">
           <el-form-item label="LDAP 服务器地址">
@@ -178,13 +157,6 @@
 import { reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
-
-const u8 = reactive({
-  gateway: 'http://10.1.1.200:8080',
-  accId: '001',
-  appKey: 'U8-OPENAPI-2026-ITAM',
-  autoSync: true,
-})
 
 const protection = reactive({
   quit: { enabled: false, passwordSet: false, password: '', saving: false },
