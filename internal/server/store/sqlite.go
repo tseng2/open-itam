@@ -110,6 +110,15 @@ CREATE TABLE IF NOT EXISTS webhook_alert_config (
     updated_at       DATETIME NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_settings (
+    id                    INTEGER PRIMARY KEY,
+    heartbeat_interval_sec INTEGER NOT NULL,
+    full_interval_sec      INTEGER NOT NULL,
+    offline_threshold_sec  INTEGER NOT NULL,
+    company_province       TEXT NOT NULL DEFAULT '',
+    updated_at            DATETIME NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS webhook_alert_states (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id INTEGER NOT NULL,
@@ -924,6 +933,38 @@ func (s *SQLiteStore) PutWebhookAlertConfig(ctx context.Context, cfg model.Webho
 		sqliteBool(cfg.Enabled), cfg.WebhookURL, cfg.Secret, cfg.CooldownMinutes, cfg.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("put webhook alert config: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetAgentSettings(ctx context.Context) (model.AgentSettings, error) {
+	var cfg model.AgentSettings
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, heartbeat_interval_sec, full_interval_sec, offline_threshold_sec, company_province, updated_at
+		 FROM agent_settings WHERE id = 1`).
+		Scan(&cfg.ID, &cfg.HeartbeatIntervalSec, &cfg.FullIntervalSec,
+			&cfg.OfflineThresholdSec, &cfg.CompanyProvince, &cfg.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.DefaultAgentSettings(), nil
+	}
+	if err != nil {
+		return model.AgentSettings{}, fmt.Errorf("get agent settings: %w", err)
+	}
+	return cfg, nil
+}
+
+func (s *SQLiteStore) PutAgentSettings(ctx context.Context, cfg model.AgentSettings) error {
+	cfg.ID = model.AgentSettingsSingletonID
+	cfg.UpdatedAt = time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_settings (id, heartbeat_interval_sec, full_interval_sec, offline_threshold_sec, company_province, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET heartbeat_interval_sec=excluded.heartbeat_interval_sec,
+		   full_interval_sec=excluded.full_interval_sec, offline_threshold_sec=excluded.offline_threshold_sec,
+		   company_province=excluded.company_province, updated_at=excluded.updated_at`,
+		cfg.HeartbeatIntervalSec, cfg.FullIntervalSec, cfg.OfflineThresholdSec, cfg.CompanyProvince, cfg.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("put agent settings: %w", err)
 	}
 	return nil
 }

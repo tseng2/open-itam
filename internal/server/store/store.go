@@ -94,6 +94,10 @@ type Store interface {
 	PutWebhookAlertConfig(ctx context.Context, cfg model.WebhookAlertConfig) error
 	ListWebhookAlertStates(ctx context.Context) ([]model.WebhookAlertState, error)
 	PutWebhookAlertState(ctx context.Context, st model.WebhookAlertState) error
+	// Agent 采集与失联判定配置（单例）：频率三联动（阈值须大于心跳）+
+	// 公司所在省（GeoIP 漫游比对基准）；无行回落内置默认
+	GetAgentSettings(ctx context.Context) (model.AgentSettings, error)
+	PutAgentSettings(ctx context.Context, cfg model.AgentSettings) error
 	// 盘点任务（阶段五 P0-β）：任务状态机 + 明细快照 + 扫码核对。
 	// 圈定范围的资产查询在 API 层完成（SQLiteStore 测试库无 assets 表），
 	// CreateStocktake 收到的即是已快照好的明细；扫码令牌只落哈希，
