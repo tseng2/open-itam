@@ -16,8 +16,9 @@ import (
 )
 
 // 公司 CRUD 契约测试：名称全局唯一 409（Unscoped 与 DB 唯一索引同
-// 口径）、更新改名、删除全业务表引用拦截 409 带明细、零引用可删
-//（硬删不占名）、写面 admin 收口读面登录可读
+// 口径）、更新改名、删除活跃引用拦截 409 带明细（软删行不阻塞——
+// 否则「删资产再删公司」被死锁）、零引用可删（硬删不占名）、
+// 写面 admin 收口读面登录可读
 
 func setupCompanyRouter(t *testing.T) *gin.Engine {
 	t.Helper()
@@ -152,9 +153,27 @@ func TestCompanyDeleteBlockedByReferences(t *testing.T) {
 		t.Fatalf("blocked message must name ref counts: %s", resp.Message)
 	}
 
-	// 清空引用后可删
-	store.DB.Unscoped().Where("company_id = ?", companyID).Delete(&model.Asset{})
-	store.DB.Unscoped().Where("company_id = ?", companyID).Delete(&model.StorageLending{})
+	// 软删资产（API 删除的真实语义）后，软删行不得阻塞公司删除——
+	// 否则「删资产再删公司」的正常流程被死锁且无 UI 途径清理
+	if err := store.DB.Delete(&model.Asset{}, asset.ID).Error; err != nil {
+		t.Fatalf("soft-delete asset: %v", err)
+	}
+	rec = doStorageJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/companies/%d", companyID), token, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("soft-deleted rows must not block: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var blockedResp struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &blockedResp); err != nil {
+		t.Fatalf("decode blocked resp: %v", err)
+	}
+	if !strings.Contains(blockedResp.Message, "移动存储领用 1") || strings.Contains(blockedResp.Message, "资产") {
+		t.Fatalf("only active lending should block: %s", blockedResp.Message)
+	}
+
+	// 软删领用（活跃引用清零）后可删；软删行成为孤儿残留（可接受，展示层不可见）
+	store.DB.Where("company_id = ?", companyID).Delete(&model.StorageLending{})
 	rec = doStorageJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/companies/%d", companyID), token, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("clean delete status=%d body=%s", rec.Code, rec.Body.String())

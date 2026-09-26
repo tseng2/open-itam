@@ -179,7 +179,10 @@ var companyRefTables = []struct {
 	{&model.Notification{}, "站内信"},
 }
 
-// Delete 删除公司：任何业务表仍有引用（含软删行——宁拦勿漏）即 409 带明细
+// Delete 删除公司：任一业务表仍有**活跃引用**即 409 带明细。
+// 只算活跃行（默认软删 scope）——软删行视为已死（展示层不可见），
+// 若计入会出现「删资产（软删）→ 删公司」被软删行死锁、且无任何 UI
+// 途径清理的死局；孤儿软删行随公司删除残留是可接受代价
 func (h *CompanyHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -192,17 +195,15 @@ func (h *CompanyHandler) Delete(c *gin.Context) {
 		return
 	}
 	var blocked []string
-	var total int64
 	for _, t := range companyRefTables {
 		var cnt int64
-		if err := store.DB.Unscoped().Model(t.modelPtr).
+		if err := store.DB.Model(t.modelPtr).
 			Where("company_id = ?", company.ID).Count(&cnt).Error; err != nil {
 			Fail(c, http.StatusInternalServerError, 50001, "查询公司引用失败")
 			return
 		}
 		if cnt > 0 {
 			blocked = append(blocked, t.what+" "+strconv.FormatInt(cnt, 10))
-			total += cnt
 		}
 	}
 	if len(blocked) > 0 {
