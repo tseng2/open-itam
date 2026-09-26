@@ -50,6 +50,8 @@ func SetupRouter(offlineThreshold time.Duration) *gin.Engine {
 			v1.RegisterConsumableRoutes(protected)
 			v1.RegisterPortalRoutes(protected)
 			v1.RegisterReportRoutes(protected)
+			v1.RegisterSoftwarePoolRoutes(protected)
+			v1.RegisterSoftwareComplianceRoutes(protected)
 		}
 	}
 

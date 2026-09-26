@@ -199,6 +199,15 @@ func (h *LicenseHandler) Delete(c *gin.Context) {
 		failDimensionInUse(c, assetRefs, "软件许可")
 		return
 	}
+	// 阶段三：受控软件池也挂接许可（席位来源），挂接中同样拦截删除
+	poolRefs, ok := countRefs(c, &model.SoftwarePool{}, "company_id = ? AND license_id = ?", companyID, id)
+	if !ok {
+		return
+	}
+	if poolRefs > 0 {
+		failDimensionInUse(c, poolRefs, "软件许可")
+		return
+	}
 	if err := h.store.DeleteLicense(c.Request.Context(), companyID, id); err != nil {
 		failLicenseStoreError(c, err, "删除软件许可失败")
 		return
