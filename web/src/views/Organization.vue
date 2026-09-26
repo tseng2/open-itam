@@ -27,6 +27,9 @@
                 <div class="sub-text">{{ row.domain || '未配置域' }}</div>
               </template>
             </el-table-column>
+            <el-table-column label="区域（漫游基准）" width="150">
+              <template #default="{ row }">{{ row.region || '—' }}</template>
+            </el-table-column>
             <el-table-column prop="code" label="编码" width="110">
               <template #default="{ row }">{{ row.code || '—' }}</template>
             </el-table-column>
@@ -101,6 +104,10 @@
         <el-form-item label="AD 域名">
           <el-input v-model="form.domain" placeholder="如：dg.example.com（阶段二 AD 同步用）" />
         </el-form-item>
+        <el-form-item label="公司区域">
+          <el-input v-model="form.region" placeholder="如：广东省|东莞市（与 IP 归属地库口径一致）" />
+          <div class="region-hint">「省|市」格式，终端联系状态「漫游中」的地理维比对基准；同省异市也算漫游；留空则该公司资产不做地理维判定</div>
+        </el-form-item>
       </el-form>
       <div v-if="editMode" class="dialog-tip">改名会同步影响全部引用该公司的页面展示（公司 ID 不变，历史数据零迁移）</div>
       <template #footer>
@@ -149,7 +156,7 @@ const emptyUsersText = computed(() =>
   selectedCompany.value ? '该公司暂无人员，可在「用户与权限」页维护' : '左侧选择一家公司查看人员',
 )
 
-const emptyForm = () => ({ name: '', code: '', domain: '' })
+const emptyForm = () => ({ name: '', code: '', domain: '', region: '' })
 const form = reactive(emptyForm())
 
 const formRules = {
@@ -219,7 +226,7 @@ function openCreateDialog() {
 
 function openEditDialog(row) {
   Object.assign(form, emptyForm(), {
-    name: row.name, code: row.code || '', domain: row.domain || '',
+    name: row.name, code: row.code || '', domain: row.domain || '', region: row.region || '',
   })
   editingId.value = row.id
   editMode.value = true
@@ -232,7 +239,7 @@ async function submit() {
     if (!valid) return
     submitting.value = true
     try {
-      const payload = { name: form.name.trim(), code: form.code.trim(), domain: form.domain.trim() }
+      const payload = { name: form.name.trim(), code: form.code.trim(), domain: form.domain.trim(), region: form.region.trim() }
       if (editMode.value) {
         await api(`/api/v1/companies/${editingId.value}`, { method: 'PUT', body: JSON.stringify(payload) })
         ElMessage.success('公司已更新')
@@ -288,4 +295,5 @@ onMounted(() => {
 .sub-text { font-size: 12px; color: #94a3b8; margin-top: 2px; }
 .pagination-area { display: flex; justify-content: flex-end; margin-top: 12px; }
 .dialog-tip { font-size: 12px; color: #d97706; background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 8px 12px; margin-top: 8px; }
+.region-hint { font-size: 12px; color: #9ca3af; margin-top: 2px; }
 </style>

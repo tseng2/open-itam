@@ -132,10 +132,6 @@
             <el-input-number v-model="agentCfg.thresholdMin" :min="2" :max="2880" style="width: 160px" />
             <span class="cfg-hint">心跳超过该时长未上报即判「疑似失联」，必须大于心跳周期</span>
           </el-form-item>
-          <el-form-item label="公司所在省份">
-            <el-input v-model="agentCfg.companyProvince" placeholder="如: 广东省（与 IP 归属地库口径一致）" style="width: 320px" />
-            <span class="cfg-hint">出口 IP 异省/海外判「漫游中」的比对基准；留空则不做地理维判定</span>
-          </el-form-item>
           <el-form-item>
             <el-button type="primary" :loading="agentCfg.saving" @click="saveAgentCfg">保存采集配置</el-button>
           </el-form-item>
@@ -206,12 +202,12 @@ const webhook = reactive({
 
 // Agent 采集与失联判定（agent_settings 单例）：表单以分钟呈现、
 // 提交换算秒；联动校验（阈值>心跳、full≥心跳）前端先拦一道，
-// 服务端为权威校验（400 原样展示）
+// 服务端为权威校验（400 原样展示）。
+// 漫游地理基准已迁至组织页（companies.region 按公司维护），本 tab 不再承载
 const agentCfg = reactive({
   heartbeatMin: 60,
   fullMin: 360,
   thresholdMin: 65,
-  companyProvince: '',
   saving: false,
 })
 
@@ -222,7 +218,6 @@ async function loadAgentCfg() {
     agentCfg.heartbeatMin = Math.round((d.heartbeat_interval_sec || 3600) / 60)
     agentCfg.fullMin = Math.round((d.full_interval_sec || 21600) / 60)
     agentCfg.thresholdMin = Math.round((d.offline_threshold_sec || 3900) / 60)
-    agentCfg.companyProvince = d.company_province || ''
   } catch { /* 非 admin 或加载失败保持默认展示 */ }
 }
 
@@ -243,7 +238,6 @@ async function saveAgentCfg() {
         heartbeat_interval_sec: agentCfg.heartbeatMin * 60,
         full_interval_sec: agentCfg.fullMin * 60,
         offline_threshold_sec: agentCfg.thresholdMin * 60,
-        company_province: agentCfg.companyProvince,
       }),
     })
     ElMessage.success('采集配置已保存，终端在下一轮心跳自动生效（v0.2.6+）')
