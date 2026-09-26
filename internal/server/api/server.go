@@ -141,6 +141,9 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.Handle("/api/v1/software-pools/", ginEngine)
 	h.mux.Handle("/api/v1/software-compliance", ginEngine)
 	h.mux.Handle("/api/v1/software-compliance/", ginEngine)
+	// 总览大盘（全员登录可读的轻聚合面）：外层 mux 挂载两行不可漏（A1 的 404 教训）
+	h.mux.Handle("/api/v1/dashboard", ginEngine)
+	h.mux.Handle("/api/v1/dashboard/", ginEngine)
 
 	return h
 }
