@@ -58,6 +58,7 @@ func load() {
 // 非中国 IP 国家段非空（如「United States」）；解析失败 / 库未初始化 /
 // 保留段返回两个空串——调用方据此跳过地理维度
 func RegionOf(ip string) (country, province string) {
+	load() // 独立入口必须自初始化：曾有调用方从未触 Available() 导致 searcher 恒 nil、地理维全静默失效（VM 烟测捞出）
 	ip = strings.TrimSpace(ip)
 	if ip == "" || searcher == nil {
 		return "", ""
