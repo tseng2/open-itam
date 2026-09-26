@@ -38,6 +38,9 @@ type serverConfig struct {
 	// 软件超用提醒冷却窗口（小时）：0 = 默认 24 小时（softwareaudit
 	// 合规引擎——同一池项冷却窗内只投一次提醒）
 	SoftwareOveruseCooldownHours int `json:"software_overuse_cooldown_hours"`
+	// 异地漫游告警冷却窗口（小时）：0 = 默认 24 小时（webhook 引擎
+	// geo_roaming——漫游是持续状态，独立于失联催报的基础冷却窗计窗）
+	GeoRoamingCooldownHours int `json:"geo_roaming_cooldown_hours"`
 }
 
 func main() {
@@ -105,9 +108,12 @@ func main() {
 	//（注入 v1 闭包扇出公司管理员，独立于 WebHook 开关）。
 	// 单进程 goroutine + Ticker 定时扫描，无需分布式锁；
 	// 失联阈值与漫游地理基准经闭包实时读 agent_settings（设置页保存即生效）；
+	// 漫游冷却窗经 server.json 注入（非正回落引擎默认 24h）；
 	// ctx 随进程退出自动取消
 	alertEngine := webhook.NewEngine(db, st,
-		v1.EffectivePresenceTimeout, v1.PresenceGeoFor, v1.NewAlertNotifier())
+		v1.EffectivePresenceTimeout, v1.PresenceGeoFor,
+		func() time.Duration { return time.Duration(cfg.GeoRoamingCooldownHours) * time.Hour },
+		v1.NewAlertNotifier())
 	engineCtx, stopEngine := context.WithCancel(context.Background())
 	defer stopEngine()
 	go alertEngine.Run(engineCtx, webhook.DefaultScanInterval)

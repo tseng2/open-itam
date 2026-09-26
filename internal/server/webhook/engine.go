@@ -16,6 +16,12 @@ import (
 // 保证冷却到期能在下一分钟内补推；内部运行参数，无需暴露为用户配置
 const DefaultScanInterval = time.Minute
 
+// DefaultGeoRoamingCooldown 异地漫游告警的默认冷却窗口（24h）：
+// 漫游是持续状态而非越催越急的失联事件，频次语义不同，不复用
+// webhook 配置的 cooldown_minutes 而独立计窗；
+// server.json geo_roaming_cooldown_hours 可覆盖（非正回落本默认）
+const DefaultGeoRoamingCooldown = 24 * time.Hour
+
 // AlertNotifier 告警站内信投递器：引擎判定出告警后回调。站内信的收件人
 // 策略（公司管理员扇出）与文案归消息中心侧（api/v1），经函数注入组装，
 // 避免 webhook → api/v1 反向依赖循环（api/v1 已 import 本包）
@@ -37,25 +43,37 @@ func NotifyAlertType(alertType string) string {
 // 资产涉及的公司 ID 集合后批量 IN 查注入（闭包实时读库，
 // A4 静态注入 + main 组装的先例方向不变），禁止硬编码
 type Engine struct {
-	db          *gorm.DB
-	store       store.Store
-	thresholdFn func() time.Duration
-	geoFn       func(companyIDs []int64) model.PresenceGeo
-	client      *http.Client
-	now         func() time.Time // 注入时钟，测试冷却边界用
-	notifier    AlertNotifier
+	db           *gorm.DB
+	store        store.Store
+	thresholdFn  func() time.Duration
+	geoFn        func(companyIDs []int64) model.PresenceGeo
+	geoCooldownFn func() time.Duration // 漫游冷却窗（server.json 注入；非正回落默认 24h）
+	client       *http.Client
+	now          func() time.Time // 注入时钟，测试冷却边界用
+	notifier     AlertNotifier
 }
 
-func NewEngine(db *gorm.DB, st store.Store, thresholdFn func() time.Duration, geoFn func([]int64) model.PresenceGeo, notifier AlertNotifier) *Engine {
+func NewEngine(db *gorm.DB, st store.Store, thresholdFn func() time.Duration, geoFn func([]int64) model.PresenceGeo, geoCooldownFn func() time.Duration, notifier AlertNotifier) *Engine {
 	return &Engine{
-		db:          db,
-		store:       st,
-		thresholdFn: thresholdFn,
-		geoFn:       geoFn,
-		client:      DefaultHTTPClient,
-		now:         time.Now,
-		notifier:    notifier,
+		db:           db,
+		store:        st,
+		thresholdFn:  thresholdFn,
+		geoFn:        geoFn,
+		geoCooldownFn: geoCooldownFn,
+		client:       DefaultHTTPClient,
+		now:          time.Now,
+		notifier:     notifier,
 	}
+}
+
+// geoCooldown 漫游告警冷却窗：非正/未注入回落默认（licensealert 先例口径）
+func (e *Engine) geoCooldown() time.Duration {
+	if e.geoCooldownFn != nil {
+		if d := e.geoCooldownFn(); d > 0 {
+			return d
+		}
+	}
+	return DefaultGeoRoamingCooldown
 }
 
 // ScanOnce 执行一轮扫描投递，返回本轮实际送达条数（站内信 + WebHook）。
@@ -67,13 +85,21 @@ func (e *Engine) ScanOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	cooldown := time.Duration(cfg.CooldownMinutes) * time.Minute
 	webhookOn := cfg.Enabled && cfg.WebhookURL != ""
 	// 双通道全关才安静空转（notifier 未注入 = 部署裁剪/测试场景）
 	if !webhookOn && e.notifier == nil {
 		return 0, nil
 	}
 	now := e.now().UTC()
+
+	// 冷却时长按类型取：overdue/missing 走 webhook 配置的基础窗，
+	// geo_roaming 独立计窗（漫游频次语义不同）
+	cooldownFor := func(alertType string) time.Duration {
+		if alertType == model.WebhookAlertGeoRoaming {
+			return e.geoCooldown()
+		}
+		return time.Duration(cfg.CooldownMinutes) * time.Minute
+	}
 
 	var assets []model.Asset
 	if err := e.db.WithContext(ctx).Preload("Device").Find(&assets).Error; err != nil {
@@ -115,11 +141,11 @@ func (e *Engine) ScanOnce(ctx context.Context) (int, error) {
 
 	delivered := 0
 	if e.notifier != nil {
-		delivered += e.notifyAlerts(ctx, alerts, lastSent, cooldown, now)
+		delivered += e.notifyAlerts(ctx, alerts, lastSent, cooldownFor, now)
 	}
 
 	if webhookOn {
-		due := FilterDue(alerts, lastSent, cooldown, now)
+		due := FilterDue(alerts, lastSent, cooldownFor, now)
 		if len(due) > 0 {
 			if err := Post(ctx, e.client, cfg.WebhookURL, cfg.Secret, Payload{
 				Event: EventTypeAlert, Timestamp: now, Alerts: due,
@@ -142,12 +168,13 @@ func (e *Engine) ScanOnce(ctx context.Context) (int, error) {
 
 // notifyAlerts 站内信通道：按 notify_* 独立键做冷却去重后逐条回调投递。
 // 单条投递失败只记日志不落冷却状态（下一轮重试），也绝不中断本轮其他
-// 告警与 WebHook 通道（通知语义永远弱于业务成功）
-func (e *Engine) notifyAlerts(ctx context.Context, alerts []Alert, lastSent map[AlertKey]time.Time, cooldown time.Duration, now time.Time) int {
+// 告警与 WebHook 通道（通知语义永远弱于业务成功）。冷却时长按类型取
+//（geo_roaming 独立计窗，与 WebHook 通道同窗口口径）
+func (e *Engine) notifyAlerts(ctx context.Context, alerts []Alert, lastSent map[AlertKey]time.Time, cooldownFor func(alertType string) time.Duration, now time.Time) int {
 	sent := 0
 	for _, a := range alerts {
 		key := AlertKey{a.CompanyID, a.AssetID, NotifyAlertType(a.AlertType)}
-		if last, ok := lastSent[key]; ok && now.Sub(last) < cooldown {
+		if last, ok := lastSent[key]; ok && now.Sub(last) < cooldownFor(a.AlertType) {
 			continue
 		}
 		if err := e.notifier(ctx, a); err != nil {

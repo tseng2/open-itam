@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -377,6 +378,76 @@ func TestResolveAssetPresenceBatch(t *testing.T) {
 		if a.Presence != expect[a.ID] {
 			t.Fatalf("asset %d (idx %d): expected presence %q, got %q", a.ID, i, expect[a.ID], a.Presence)
 		}
+	}
+}
+
+// 异地漫游告警（geo_roaming）：判定依据写回 RoamingReason（transient，
+// BuildAlerts 直读禁止重算——口径单源）。四 case：网络维 / 地理维 /
+// 海外出口 / 非 roaming 不写；非漫游态必须清空防批量复用串台
+func TestResolveAssetPresenceRoamingReason(t *testing.T) {
+	now, threshold := presenceFixture()
+	geo := PresenceGeo{
+		RegionByCompany: map[int64]string{1: "广东省|东莞市"},
+		RegionOf: func(ip string) (string, string, string) {
+			switch ip {
+			case "222.92.0.1":
+				return "中国", "江苏省", "苏州市" // 苏州出口
+			case "8.8.8.8":
+				return "United States", "California", ""
+			}
+			return "", "", ""
+		},
+	}
+	assets := []Asset{
+		// 网络维：本机直接持有公网 IP（4G/拨号/直连）
+		{BaseModel: BaseModel{ID: 1}, CompanyID: 1, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "223.104.5.6", PublicIP: "223.104.5.6"}},
+		// 地理维：东莞公司资产跑到苏州出口
+		{BaseModel: BaseModel{ID: 2}, CompanyID: 1, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.10", PublicIP: "222.92.0.1"}},
+		// 海外出口
+		{BaseModel: BaseModel{ID: 3}, CompanyID: 1, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.11", PublicIP: "8.8.8.8"}},
+		// 在线（公司出口 + 本机私网）：不写依据
+		{BaseModel: BaseModel{ID: 4}, CompanyID: 1, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.12", PublicIP: "61.142.9.88"}},
+		// 疑似失联：不写依据
+		{BaseModel: BaseModel{ID: 5}, CompanyID: 1, Device: &Device{
+			LastSeenAt: now.Add(-time.Hour), IPAddress: "223.104.5.9", PublicIP: "223.104.5.9"}},
+	}
+	ResolveAssetPresence(assets, nil, now, threshold, geo)
+
+	if assets[0].RoamingReason == "" || !strings.Contains(assets[0].RoamingReason, "本机 IP 223.104.5.6") {
+		t.Fatalf("network-dim reason must carry local public ip, got %q", assets[0].RoamingReason)
+	}
+	if reason := assets[1].RoamingReason; !strings.Contains(reason, "222.92.0.1") ||
+		!strings.Contains(reason, "江苏省|苏州市") {
+		t.Fatalf("geo-dim reason must carry egress ip and region, got %q", reason)
+	}
+	if reason := assets[2].RoamingReason; !strings.Contains(reason, "8.8.8.8") ||
+		!strings.Contains(reason, "United States") {
+		t.Fatalf("overseas reason must carry egress ip and country, got %q", reason)
+	}
+	for _, i := range []int{3, 4} {
+		if assets[i].RoamingReason != "" {
+			t.Fatalf("non-roaming asset %d must have empty reason, got %q", i, assets[i].RoamingReason)
+		}
+	}
+}
+
+// 依据清空：同一批资产重判为非漫游时旧依据不得残留（批量复用防御）
+func TestResolveAssetPresenceReasonClearedOnReResolve(t *testing.T) {
+	now, threshold := presenceFixture()
+	assets := []Asset{
+		{BaseModel: BaseModel{ID: 1}, CompanyID: 1,
+			RoamingReason: "出口 IP 222.92.0.1 解析区域 江苏省|苏州市",
+			Device: &Device{LastSeenAt: now.Add(-5 * time.Minute),
+				IPAddress: "192.168.1.10", PublicIP: "61.142.9.88"}},
+	}
+	ResolveAssetPresence(assets, nil, now, threshold, PresenceGeo{})
+	if assets[0].Presence != PresenceOnline || assets[0].RoamingReason != "" {
+		t.Fatalf("re-resolved online asset must drop stale reason, got presence=%q reason=%q",
+			assets[0].Presence, assets[0].RoamingReason)
 	}
 }
 

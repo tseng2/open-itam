@@ -122,6 +122,49 @@ func TestAlertNotifierFansOutToCompanyAdmins(t *testing.T) {
 	}
 }
 
+// geo_roaming 第六类通知（GeoIP 二期）：独立类型不复用 asset_alert，
+// title 带资产编码、resource=assets 跳资产页、扇出所属公司管理员
+func TestAlertNotifierGeoRoamingProducesSixthType(t *testing.T) {
+	setupNotifySourceDB(t)
+	companyID, adminID, superID, userID := seedNotifySourceFixture(t)
+	notifier := NewAlertNotifier()
+
+	err := notifier(context.Background(), webhook.Alert{
+		CompanyID: companyID, AssetID: 77, AssetTag: "AST-ROAM-1",
+		AlertType: model.WebhookAlertGeoRoaming,
+		Message: "异地漫游：资产 AST-ROAM-1（ThinkPad X1）所属公司区域 广东省|东莞市，出口 IP 222.92.0.1 解析区域 江苏省|苏州市；最近心跳 2026-09-26 12:00:00",
+	})
+	if err != nil {
+		t.Fatalf("geo roaming notifier: %v", err)
+	}
+
+	// 第六类独立落库：geo_roaming 与 asset_alert 分离
+	items := listNotificationsByType(t, companyID, model.NotificationTypeGeoRoaming)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 geo_roaming notifications, got %+v", items)
+	}
+	if len(listNotificationsByType(t, companyID, model.NotificationTypeAssetAlert)) != 0 {
+		t.Fatal("geo_roaming must not fall into asset_alert type")
+	}
+	recipients := map[int64]bool{}
+	for _, n := range items {
+		if n.Title != "异地漫游提醒：AST-ROAM-1" {
+			t.Fatalf("geo title must carry asset tag: %+v", n)
+		}
+		if n.Resource != "assets" || n.ResourceID != "77" {
+			t.Fatalf("geo notification must link asset: %+v", n)
+		}
+		if !strings.Contains(n.Content, "江苏省|苏州市") || !strings.Contains(n.Content, "广东省|东莞市") {
+			t.Fatalf("geo content must carry judgment basis: %+v", n)
+		}
+		recipients[n.UserID] = true
+	}
+	// 扇出收口：公司 admin + super_admin，普通用户不收
+	if !recipients[adminID] || !recipients[superID] || recipients[userID] {
+		t.Fatalf("geo notify must reach company admins only: %+v", recipients)
+	}
+}
+
 func TestLicenseExpiringNotifierFansOut(t *testing.T) {
 	setupNotifySourceDB(t)
 	companyID, adminID, superID, userID := seedNotifySourceFixture(t)

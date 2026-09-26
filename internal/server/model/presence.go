@@ -51,7 +51,9 @@ type PresenceGeo struct {
 // ResolveAssetPresence 批量解析资产联系状态并写回 Presence 字段。
 // 资产列表富化（A2）与 Webhook 告警扫描（A4）共用的唯一实现，
 // 判定核心恒为 ResolvePresence，阈值与地理维度由调用方注入，禁止各自重复实现。
-// assets 须已 Preload("Device")；无 Agent 终端跳过（Presence 留空不参与判定）
+// assets 须已 Preload("Device")；无 Agent 终端跳过（Presence 留空不参与判定）。
+// 漫游分支同步写回 RoamingReason 判定依据（geo_roaming 告警文案单源），
+// 非漫游态清空——批量复用切片重判时旧依据不得残留
 func ResolveAssetPresence(assets []Asset, dispatchByAsset map[int64]*AssetDispatch, now time.Time, heartbeatTimeout time.Duration, geo PresenceGeo) {
 	for i := range assets {
 		a := &assets[i]
@@ -72,7 +74,7 @@ func ResolveAssetPresence(assets []Asset, dispatchByAsset map[int64]*AssetDispat
 			in.EgressCountry = country
 			in.EgressRegion = joinRegion(province, city)
 		}
-		a.Presence = ResolvePresence(in)
+		a.Presence, a.RoamingReason = resolvePresence(in)
 	}
 }
 
@@ -86,34 +88,45 @@ func ResolveAssetPresence(assets []Asset, dispatchByAsset map[int64]*AssetDispat
 //     区域内）不再误报漫游。同城家宽与公司内网 GeoIP 无法区分（市级
 //     颗粒度极限），按在线处理
 func ResolvePresence(in PresenceInput) string {
+	presence, _ := resolvePresence(in)
+	return presence
+}
+
+// resolvePresence 判定 + 漫游依据文案（唯一源）：reason 仅在漫游时非空，
+// 文案供 geo_roaming 告警与前端展示直读（BuildAlerts 禁止重算判定口径）
+func resolvePresence(in PresenceInput) (presence, reason string) {
 	offline := in.Now.Sub(in.LastSeenAt) > in.HeartbeatTimeout
 	if in.ActiveDispatch != nil && in.Now.After(in.ActiveDispatch.ExpectedReturnAt) {
-		return PresenceOverdue
+		return PresenceOverdue, ""
 	}
 	if offline {
 		if in.ActiveDispatch != nil && in.ActiveDispatch.IsolationOffline {
-			return PresenceDispatchOffline
+			return PresenceDispatchOffline, ""
 		}
-		return PresenceMissing
+		return PresenceMissing, ""
 	}
-	if roamingByNetwork(in) {
-		return PresenceRoaming
+	if roaming, why := roamingByNetwork(in); roaming {
+		return PresenceRoaming, why
 	}
-	return PresenceOnline
+	return PresenceOnline, ""
 }
 
-// roamingByNetwork 漫游双维判定。无出口 IP（纯内网无外网探测能力）不判漫游
-func roamingByNetwork(in PresenceInput) bool {
+// roamingByNetwork 漫游双维判定，同时产出人可读的判定依据文案。
+// 无出口 IP（纯内网无外网探测能力）不判漫游
+func roamingByNetwork(in PresenceInput) (bool, string) {
 	if in.PublicIP == "" {
-		return false
+		return false, ""
 	}
 	if isPubliclyRoutedIP(in.LocalIP) {
-		return true
+		return true, "本机 IP " + trimCIDR(in.LocalIP) + " 为公网可路由地址（直连公网/4G/拨号）"
 	}
 	if in.EgressCountry != "" && in.EgressCountry != "中国" {
-		return true
+		return true, "出口 IP " + in.PublicIP + " 解析为海外（" + in.EgressCountry + "）"
 	}
-	return regionMismatch(in.EgressRegion, in.HomeRegion)
+	if regionMismatch(in.EgressRegion, in.HomeRegion) {
+		return true, "出口 IP " + in.PublicIP + " 解析区域 " + in.EgressRegion
+	}
+	return false, ""
 }
 
 // joinRegion 组装「省|市」比对串（与 companies.region 同口径）：
@@ -149,14 +162,19 @@ func regionMismatch(egress, home string) bool {
 	return eParts[1] != hParts[1]
 }
 
+// trimCIDR 截掉 IP 地址可能携带的 CIDR 后缀（如 172.20.36.7/24）
+func trimCIDR(raw string) string {
+	if i := strings.IndexByte(raw, '/'); i >= 0 {
+		return raw[:i]
+	}
+	return raw
+}
+
 // isPubliclyRoutedIP 本机 IP 是否公网可路由地址：IPv4 排除 RFC1918 私网段，
 // IPv6 排除唯一本地地址（fc00::/7）；带 CIDR 后缀（如 172.20.36.7/24）宽容截取。
 // 解析失败按非公网处理（宁漏报不误报——解析不了的地址不该触发漫游）
 func isPubliclyRoutedIP(raw string) bool {
-	if i := strings.IndexByte(raw, '/'); i >= 0 {
-		raw = raw[:i]
-	}
-	ip := net.ParseIP(strings.TrimSpace(raw))
+	ip := net.ParseIP(strings.TrimSpace(trimCIDR(raw)))
 	if ip == nil || !ip.IsGlobalUnicast() {
 		return false
 	}

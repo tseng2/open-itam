@@ -95,6 +95,10 @@ type Asset struct {
 	// 联系状态（阶段五 A2 失联语义分层）：服务端按 外派登记 × LastSeenAt × 心跳阈值
 	// 实时计算，不落库（gorm:"-"）；无 Agent 终端留空。五态定义见 presence.go
 	Presence       string     `gorm:"-" json:"presence,omitempty"`
+	// 漫游判定依据（geo_roaming 告警）：ResolveAssetPresence 在 roaming
+	// 分支写回（网络维/地理维/海外，文案即告警依据），不落库；非漫游态
+	// 恒空。BuildAlerts 直读本字段，禁止重算判定口径（单源）
+	RoamingReason  string     `gorm:"-" json:"roaming_reason,omitempty"`
 
 	Brand          string     `gorm:"type:varchar(64)" json:"brand"`                          // 品牌 (联想、DELL、苹果等)
 	ModelName      string     `gorm:"type:varchar(128)" json:"model"`                         // 型号规格

@@ -2,12 +2,15 @@ package model
 
 import "time"
 
-// Webhook 告警类型（阶段五 A4）：与联系状态五态中的两个高危态一一对应；
-// test 仅用于 Web UI 手动连通性测试，不出现在定时扫描产物中
+// Webhook 告警类型（阶段五 A4）：与联系状态高危态一一对应；
+// test 仅用于 Web UI 手动连通性测试，不出现在定时扫描产物中；
+// geo_roaming 为异地漫游告警（2026-09-26 GeoIP 二期）：漫游频次
+// 语义与失联催报不同，冷却窗独立计（geoCooldownFn 注入）
 const (
-	WebhookAlertOverdue = "overdue" // 超期未归（外派中且已过预计归期）
-	WebhookAlertMissing = "missing" // 疑似失联（无外派豁免且心跳超阈值）
-	WebhookAlertTest   = "test"    // 手动连通性测试
+	WebhookAlertOverdue   = "overdue"   // 超期未归（外派中且已过预计归期）
+	WebhookAlertMissing   = "missing"   // 疑似失联（无外派豁免且心跳超阈值）
+	WebhookAlertGeoRoaming = "geo_roaming" // 异地漫游（网络维本机公网 / 地理维异地 / 海外出口）
+	WebhookAlertTest      = "test"      // 手动连通性测试
 )
 
 // DefaultWebhookCooldownMinutes 告警冷却窗口默认 60 分钟：
@@ -35,7 +38,7 @@ type WebhookAlertState struct {
 	BaseModel
 	CompanyID int64     `gorm:"uniqueIndex:idx_webhook_alert_state;not null" json:"company_id"`
 	AssetID   int64     `gorm:"uniqueIndex:idx_webhook_alert_state;not null" json:"asset_id"`
-	AlertType string    `gorm:"type:varchar(32);uniqueIndex:idx_webhook_alert_state;not null" json:"alert_type"` // overdue / missing
+	AlertType string    `gorm:"type:varchar(32);uniqueIndex:idx_webhook_alert_state;not null" json:"alert_type"` // overdue / missing / geo_roaming
 	SentAt    time.Time `gorm:"not null" json:"sent_at"`
 }
 

@@ -14,13 +14,13 @@ const (
 )
 
 // Alert 单条告警载荷：超期未归带外派上下文（催归要用），
-// 疑似失联带最近心跳（核实要用）
+// 疑似失联带最近心跳（核实要用），异地漫游带判定依据与最近心跳
 type Alert struct {
 	AssetID          int64      `json:"asset_id"`
 	CompanyID        int64      `json:"company_id"`
 	AssetTag         string     `json:"asset_tag"`
 	Model            string     `json:"model,omitempty"`
-	AlertType        string     `json:"alert_type"` // overdue / missing
+	AlertType        string     `json:"alert_type"` // overdue / missing / geo_roaming
 	BorrowerName     string     `json:"borrower_name,omitempty"`
 	Destination      string     `json:"destination,omitempty"`
 	ExpectedReturnAt *time.Time `json:"expected_return_at,omitempty"`
@@ -82,17 +82,39 @@ func BuildAlerts(assets []model.Asset, dispatchByAsset map[int64]*model.AssetDis
 				Message: fmt.Sprintf("疑似失联：资产 %s（%s）最近心跳 %s，已超离线阈值无心跳",
 					a.AssetTag, a.ModelName, lastSeen.Format("2006-01-02 15:04:05")),
 			})
+		case model.PresenceRoaming:
+			// 异地漫游（GeoIP 二期）：判定依据直读 Asset.RoamingReason
+			//（ResolveAssetPresence roaming 分支写回，口径单源禁止重算）。
+			// 文案四要素：资产编码 + 所属公司区域 + 判定依据 + 最近心跳
+			lastSeen := a.Device.LastSeenAt
+			home := geo.RegionByCompany[a.CompanyID]
+			if home == "" {
+				home = "未配置"
+			}
+			alerts = append(alerts, Alert{
+				AssetID:    a.ID,
+				CompanyID:  a.CompanyID,
+				AssetTag:   a.AssetTag,
+				Model:      a.ModelName,
+				AlertType:  model.WebhookAlertGeoRoaming,
+				LastSeenAt: &lastSeen,
+				Message: fmt.Sprintf("异地漫游：资产 %s（%s）所属公司区域 %s，%s；最近心跳 %s",
+					a.AssetTag, a.ModelName, home, a.RoamingReason,
+					lastSeen.Format("2006-01-02 15:04:05")),
+			})
 		}
 	}
 	return alerts
 }
 
 // FilterDue 冷却去重：同资产同类型在冷却窗口内不重复推送；
-// 冷却期满仍未恢复（未处理）则放行再次提醒；类型升级（missing→overdue）独立计窗
-func FilterDue(alerts []Alert, lastSent map[AlertKey]time.Time, cooldown time.Duration, now time.Time) []Alert {
+// 冷却期满仍未恢复（未处理）则放行再次提醒；类型升级（missing→overdue）
+// 独立计窗。冷却时长按告警类型取（geo_roaming 独立计窗，其余走
+// webhook 配置的基础窗）——cooldownFor 由调用方组装
+func FilterDue(alerts []Alert, lastSent map[AlertKey]time.Time, cooldownFor func(alertType string) time.Duration, now time.Time) []Alert {
 	due := make([]Alert, 0, len(alerts))
 	for _, a := range alerts {
-		if sent, ok := lastSent[AlertKey{a.CompanyID, a.AssetID, a.AlertType}]; ok && now.Sub(sent) < cooldown {
+		if sent, ok := lastSent[AlertKey{a.CompanyID, a.AssetID, a.AlertType}]; ok && now.Sub(sent) < cooldownFor(a.AlertType) {
 			continue
 		}
 		due = append(due, a)

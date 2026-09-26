@@ -47,13 +47,19 @@ func notifyCompanyAdminsCtx(ctx context.Context, tpl model.Notification) (int, e
 
 // NewAlertNotifier A4 告警站内信投递闭包：main 组装注入给 webhook 引擎。
 // 告警判定口径在 webhook.BuildAlerts（单源），本闭包只负责收件人扇出与
-// 文案；冷却去重在引擎侧（notify_* 独立键），站内信独立于 WebHook 开关
+// 文案；冷却去重在引擎侧（notify_* 独立键），站内信独立于 WebHook 开关。
+// geo_roaming 产出第六类通知（GeoIP 二期）：类型独立不复用 asset_alert
+//（消息中心独立过滤），title 带资产编码便于铃铛直读
 func NewAlertNotifier() webhook.AlertNotifier {
 	return func(ctx context.Context, alert webhook.Alert) error {
+		nType := model.NotificationTypeAssetAlert
+		if alert.AlertType == model.WebhookAlertGeoRoaming {
+			nType = model.NotificationTypeGeoRoaming
+		}
 		_, err := notifyCompanyAdminsCtx(ctx, model.Notification{
 			CompanyID:  alert.CompanyID,
-			Type:       model.NotificationTypeAssetAlert,
-			Title:      alertNotificationTitle(alert.AlertType),
+			Type:       nType,
+			Title:      alertNotificationTitle(alert.AlertType, alert.AssetTag),
 			Content:    alert.Message,
 			Resource:   "assets",
 			ResourceID: strconv.FormatInt(alert.AssetID, 10),
@@ -62,12 +68,14 @@ func NewAlertNotifier() webhook.AlertNotifier {
 	}
 }
 
-func alertNotificationTitle(alertType string) string {
+func alertNotificationTitle(alertType, assetTag string) string {
 	switch alertType {
 	case model.WebhookAlertOverdue:
 		return "资产告警：超期未归"
 	case model.WebhookAlertMissing:
 		return "资产告警：疑似失联"
+	case model.WebhookAlertGeoRoaming:
+		return "异地漫游提醒：" + assetTag
 	default:
 		return "资产告警"
 	}

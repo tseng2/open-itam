@@ -5,5 +5,6 @@
   "install_token": "CHANGE_ME_install_token",
   "admin_token": "CHANGE_ME_admin_token",
   "default_heartbeat_sec": 600,
-  "default_full_sec": 3600
+  "default_full_sec": 3600,
+  "geo_roaming_cooldown_hours": 24
 }

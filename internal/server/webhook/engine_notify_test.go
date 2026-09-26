@@ -56,6 +56,7 @@ func setupNotifyEngine(t *testing.T, notifier AlertNotifier) (*Engine, *store.Go
 	engine := NewEngine(db, st,
 		func() time.Duration { return 15 * time.Minute },
 		func([]int64) model.PresenceGeo { return model.PresenceGeo{} },
+		nil, // geo_roaming 冷却走默认 24h
 		notifier)
 	engine.now = func() time.Time { return base }
 	return engine, st, base
