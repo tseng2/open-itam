@@ -63,20 +63,18 @@
           <template #header>
             <div class="card-header">
               <span class="title">各子公司硬件资产分布状况</span>
-              <el-radio-group v-model="viewType" size="small">
-                <el-radio-button label="台数" />
-                <el-radio-button label="采购金额" />
-              </el-radio-group>
+              <el-button link size="small" @click="fetchCompanyDistribution">刷新</el-button>
             </div>
           </template>
           <div class="mock-chart-placeholder">
-            <div class="bar-group" v-for="c in companiesMock" :key="c.name">
+            <div class="bar-group" v-for="c in companyDistribution" :key="c.name">
               <div class="bar-label">{{ c.name }}</div>
               <div class="bar-track">
                 <div class="bar-fill" :style="{ width: c.percent + '%' }"></div>
               </div>
               <div class="bar-val">{{ c.count }} 台 ({{ c.percent }}%)</div>
             </div>
+            <div v-if="!companyDistribution.length" class="empty-dist">暂无公司或资产数据，先在「组织架构」维护公司并建账资产</div>
           </div>
         </el-card>
       </el-col>
@@ -114,21 +112,47 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { api } from '../api'
 
-const viewType = ref('台数')
+// 各子公司资产分布：真实数据（原 mock 写死「东莞/苏州」已废）——
+// 拉公司列表后逐公司查资产 total（公司量级小，串行可接受），
+// percent 按资产数占比取整。总览大盘其余卡片实装属独立任务
+const companyDistribution = ref([])
 
-const companiesMock = [
-  { name: '集团总部 (深圳)', count: 480, percent: 38 },
-  { name: '东莞智能制造基地', count: 390, percent: 31 },
-  { name: '苏州研发中心', count: 240, percent: 19 },
-  { name: '北京营销中心', count: 138, percent: 12 },
-]
+async function fetchCompanyDistribution() {
+  try {
+    const res = await api('/api/v1/companies')
+    const companies = res.data || []
+    const rows = []
+    for (const c of companies) {
+      try {
+        const a = await api(`/api/v1/assets?company_id=${c.id}&page=1&page_size=1`)
+        rows.push({ name: c.name, count: a.data?.total || 0 })
+      } catch { /* 单公司查询失败不阻塞整体 */ rows.push({ name: c.name, count: 0 }) }
+    }
+    const total = rows.reduce((s, r) => s + r.count, 0)
+    companyDistribution.value = rows.map(r => ({
+      ...r,
+      percent: total > 0 ? Math.max(1, Math.round((r.count / total) * 100)) : 0,
+    }))
+  } catch { /* 公司列表失败保持空态 */ }
+}
+
+onMounted(() => {
+  fetchCompanyDistribution()
+})
 </script>
 
 <style scoped>
 .dashboard-view {
   padding: 4px;
+}
+.empty-dist {
+  padding: 24px 0;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
 }
 .stat-card {
   border-radius: 10px;

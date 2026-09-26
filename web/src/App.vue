@@ -111,7 +111,7 @@
 
         <el-menu-item index="/organization">
           <el-icon><OfficeBuilding /></el-icon>
-          <span>组织架构 (AD)</span>
+          <span>组织架构</span>
         </el-menu-item>
 
         <el-menu-item index="/users">
@@ -235,7 +235,7 @@ const currentRouteTitle = computed(() => {
     '/consumables': '耗材管理',
     '/devices': '终端设备画像',
     '/changes': '硬件变更与预警中心',
-    '/organization': '组织架构与人员',
+    '/organization': '组织与人员管理',
     '/users': '系统用户与权限 (RBAC)',
     '/operation-logs': '操作日志审计',
     '/reports': '报表中心',
