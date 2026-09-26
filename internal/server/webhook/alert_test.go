@@ -37,7 +37,7 @@ func TestBuildAlertsOverdueAndMissingOnly(t *testing.T) {
 		4: {Status: model.DispatchStatusActive, ExpectedReturnAt: now.Add(24 * time.Hour), IsolationOffline: true},
 	}
 
-	alerts := BuildAlerts([]model.Asset{overdue, missing, online, isolated, noDevice}, dispatches, now, threshold)
+	alerts := BuildAlerts([]model.Asset{overdue, missing, online, isolated, noDevice}, dispatches, now, threshold, model.PresenceGeo{})
 	if len(alerts) != 2 {
 		t.Fatalf("expected 2 alerts (overdue+missing), got %d: %+v", len(alerts), alerts)
 	}

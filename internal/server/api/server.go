@@ -14,6 +14,7 @@ import (
 
 	"itagent/internal/server/alert"
 	"itagent/internal/server/api/middleware"
+	v1 "itagent/internal/server/api/v1"
 	"itagent/internal/server/model"
 	"itagent/internal/server/store"
 	"itagent/internal/shared/hwfilter"
@@ -23,12 +24,8 @@ import (
 )
 
 type Config struct {
-	InstallToken        string
-	AdminToken          string
-	DefaultHeartbeatSec int
-	DefaultFullSec      int
-	// A2 失联语义分层：资产联系状态的离线判定阈值（秒），0 = 默认 15 分钟
-	OfflineThresholdSec int
+	InstallToken string
+	AdminToken   string
 	// Agent 安装包更新清单文件路径（JSON：version/file/sha256/notes），
 	// 为空时不下发更新
 	UpdateManifest string
@@ -38,19 +35,6 @@ type Handler struct {
 	store store.Store
 	cfg   Config
 	mux   *http.ServeMux
-}
-
-// defaultOfflineThreshold A2 失联判定的默认离线阈值：15 分钟容忍一次心跳丢失
-const defaultOfflineThreshold = 15 * time.Minute
-
-// ResolveOfflineThreshold 把 server.json 的 offline_threshold_sec 归一为时长：
-// 0/负值取默认 15 分钟。main（A4 Webhook 引擎注入）与 NewHandler 共用，
-// 默认值只此一处，禁止各自硬编码
-func ResolveOfflineThreshold(sec int) time.Duration {
-	if sec <= 0 {
-		return defaultOfflineThreshold
-	}
-	return time.Duration(sec) * time.Second
 }
 
 func NewHandler(s store.Store, cfg Config) *Handler {
@@ -67,10 +51,10 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	h.mux.Handle("GET /api/v1/changes", h.admin(h.handleListChanges))
 	h.mux.Handle("POST /api/v1/changes/{id}/ack", h.admin(h.handleAckChange))
 
-	// 挂载全新 ITAM 资产管理与集团公司路由
-	// A2 失联语义分层：资产列表联系状态的离线判定阈值，未配置时默认 15 分钟
-	// （容忍一次心跳丢失），源头是 server.json 的 offline_threshold_sec
-	ginEngine := SetupRouter(ResolveOfflineThreshold(cfg.OfflineThresholdSec))
+	// 挂载全新 ITAM 资产管理与集团公司路由。
+	// 失联阈值/采集频率不再从 server.json 注入：agent_settings 单例是
+	// 唯一源（设置页保存即生效，判定时实时读库）
+	ginEngine := SetupRouter()
 	h.mux.Handle("/api/v1/auth", ginEngine)
 	h.mux.Handle("/api/v1/auth/", ginEngine)
 	h.mux.Handle("/api/v1/assets", ginEngine)
@@ -144,6 +128,9 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 总览大盘（全员登录可读的轻聚合面）：外层 mux 挂载两行不可漏（A1 的 404 教训）
 	h.mux.Handle("/api/v1/dashboard", ginEngine)
 	h.mux.Handle("/api/v1/dashboard/", ginEngine)
+	// Agent 采集与失联判定配置面（设置页维护，读写 admin）：两行不可漏
+	h.mux.Handle("/api/v1/agent-settings", ginEngine)
+	h.mux.Handle("/api/v1/agent-settings/", ginEngine)
 
 	return h
 }
@@ -306,10 +293,26 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if len(env.Payload) > 0 {
 		var hb protocol.HeartbeatPayload
 		if err := json.Unmarshal(env.Payload, &hb); err == nil {
-			_ = h.store.UpsertDeviceSeen(r.Context(), store.Device{
+			if err := h.store.UpsertDeviceSeen(r.Context(), store.Device{
 				DeviceID: env.DeviceID, Hostname: hb.Hostname,
 				OS: hb.OS.Name, AgentVersion: env.AgentVersion,
-			})
+			}); err != nil {
+				// 心跳表更新失败不拒收上报（reports 仍有审计价值），但必须留痕
+				log.Printf("[ingest] upsert device seen %s: %v", env.DeviceID, err)
+			}
+			// 心跳同步刷新资产绑定表 last_seen（假失联修复，2026-09-26）：
+			// 联系状态判定读 agent_devices.last_seen_at，此前只有 full 上报
+			// （1 小时周期）更新它，而心跳是 600s 级——full 周期大于失联阈值，
+			// 每小时必然出现"终端健康却判疑似失联"的假失联窗口。只刷时间戳，
+			// IP/硬件等字段仍由 full 的 syncToAssetLedger 维护；
+			// store.DB 未初始化（纯老栈测试环境）跳过
+			if store.DB != nil {
+				if err := store.DB.WithContext(r.Context()).Model(&model.Device{}).
+					Where("device_id = ?", env.DeviceID).
+					Update("last_seen_at", time.Now()).Error; err != nil {
+					log.Printf("[ingest] touch agent_devices last_seen %s: %v", env.DeviceID, err)
+				}
+			}
 		}
 	}
 	if env.ReportType == protocol.ReportTypeFull {
@@ -322,12 +325,15 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 500, "message": "save failed"})
 		return
 	}
+	// 采集频率下发：agent_settings 单例是唯一源（设置页保存即生效）；
+	// 老版本 Agent 不识别响应字段则沿用自身默认，互不影响
+	agentCfg := v1.EffectiveAgentSettings()
 	writeJSON(w, http.StatusOK, protocol.IngestResponse{
 		Code:             0,
 		Message:          "ok",
 		ServerTime:       time.Now().UTC().Format(time.RFC3339),
-		NextHeartbeatSec: h.cfg.DefaultHeartbeatSec,
-		NextFullSec:      h.cfg.DefaultFullSec,
+		NextHeartbeatSec: agentCfg.HeartbeatIntervalSec,
+		NextFullSec:      agentCfg.FullIntervalSec,
 		Update:           h.updateInfoFor(env.AgentVersion),
 	})
 }
@@ -348,10 +354,13 @@ func (h *Handler) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 500, "message": "query protection failed"})
 		return
 	}
+	// 采集频率随防护策略一并下发（Agent 每次心跳 tick 拉取本端点）：
+	// agent_settings 单例是唯一源，设置页保存即生效
+	agentCfg := v1.EffectiveAgentSettings()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code":                   0,
-		"heartbeat_interval_sec": h.cfg.DefaultHeartbeatSec,
-		"full_interval_sec":      h.cfg.DefaultFullSec,
+		"heartbeat_interval_sec": agentCfg.HeartbeatIntervalSec,
+		"full_interval_sec":      agentCfg.FullIntervalSec,
 		"quit_protection":        map[string]any{"enabled": quit.Enabled, "password_hash": quit.PasswordHash},
 		"uninstall_protection":   map[string]any{"enabled": uninstall.Enabled, "password_hash": uninstall.PasswordHash},
 	})

@@ -44,9 +44,10 @@ type Payload struct {
 
 // BuildAlerts 从台账资产构建超期/失联告警清单。联系状态判定复用
 // model.ResolveAssetPresence（内部即 model.ResolvePresence 纯函数），
-// 阈值由调用方从 offline_threshold_sec 配置注入，禁止在本包重复实现
-func BuildAlerts(assets []model.Asset, dispatchByAsset map[int64]*model.AssetDispatch, now time.Time, heartbeatTimeout time.Duration) []Alert {
-	model.ResolveAssetPresence(assets, dispatchByAsset, now, heartbeatTimeout)
+// 阈值与漫游地理基准由调用方经函数注入（唯一源 agent_settings），
+// 禁止在本包重复实现
+func BuildAlerts(assets []model.Asset, dispatchByAsset map[int64]*model.AssetDispatch, now time.Time, heartbeatTimeout time.Duration, geo model.PresenceGeo) []Alert {
+	model.ResolveAssetPresence(assets, dispatchByAsset, now, heartbeatTimeout, geo)
 
 	alerts := make([]Alert, 0, len(assets))
 	for i := range assets {

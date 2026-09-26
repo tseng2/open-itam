@@ -15,14 +15,13 @@ import (
 )
 
 // AssetHandler 资产台账管理接口。
-// offlineThreshold 为 A2 失联语义分层的离线判定阈值，源头是 server.json，
-// 经 SetupRouter → RegisterAssetRoutes 显式注入，禁止在业务逻辑硬编码
-type AssetHandler struct {
-	offlineThreshold time.Duration
-}
+// 失联阈值与漫游地理基准不再启动注入：agent_settings 单例是唯一源
+// （设置页保存即生效），判定时经 EffectivePresenceTimeout / EffectivePresenceGeo
+// 实时读取，禁止在业务逻辑硬编码
+type AssetHandler struct{}
 
-func RegisterAssetRoutes(r *gin.RouterGroup, offlineThreshold time.Duration) {
-	h := &AssetHandler{offlineThreshold: offlineThreshold}
+func RegisterAssetRoutes(r *gin.RouterGroup) {
+	h := &AssetHandler{}
 	assets := r.Group("/assets")
 	{
 		assets.GET("", h.List)
@@ -183,9 +182,10 @@ func (h *AssetHandler) List(c *gin.Context) {
 	})
 }
 
-// enrichPresence 批量计算资产联系状态（A2 失联语义分层）：
+// enrichPresence 批量计算资产联系状态（A2 失联语义分层 + 漫游双维）：
 // 一次 IN 查询取全部进行中外派，避免逐资产 N+1；判定核心复用
-// model.ResolveAssetPresence（A4 Webhook 扫描与之共用同一实现）
+// model.ResolveAssetPresence（A4 Webhook 扫描与之共用同一实现），
+// 阈值/公司省/GeoIP 注入统一走 agent_settings 生效配置
 func (h *AssetHandler) enrichPresence(ctx context.Context, items []model.Asset) error {
 	assetIDs := make([]int64, 0, len(items))
 	for _, a := range items {
@@ -202,7 +202,8 @@ func (h *AssetHandler) enrichPresence(ctx context.Context, items []model.Asset) 
 		dispatchByAsset[dispatches[i].AssetID] = &dispatches[i]
 	}
 
-	model.ResolveAssetPresence(items, dispatchByAsset, time.Now().UTC(), h.offlineThreshold)
+	model.ResolveAssetPresence(items, dispatchByAsset, time.Now().UTC(),
+		EffectivePresenceTimeout(), EffectivePresenceGeo())
 	return nil
 }
 

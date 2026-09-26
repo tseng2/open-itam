@@ -35,7 +35,7 @@ func setupDepreciationRouter(t *testing.T) *gin.Engine {
 	protected.Use(middleware.AuthMiddleware())
 	RegisterDepreciationRoutes(protected)
 	// 资产销账挂在资产路由面，一并注册以覆盖混组前缀
-	RegisterAssetRoutes(protected, 15*time.Minute)
+	RegisterAssetRoutes(protected)
 	return r
 }
 

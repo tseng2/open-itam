@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,9 +15,9 @@ import (
 	"itagent/internal/server/store"
 )
 
-// setupPresenceRouter 构建带资产路由的测试引擎；离线阈值显式传入，
-// 验证"阈值读配置"的注入链路
-func setupPresenceRouter(t *testing.T, threshold time.Duration) *gin.Engine {
+// setupPresenceRouter 构建带资产路由的测试引擎；离线阈值经 agent_settings
+// 单例行写入（唯一源），验证"阈值读配置"链路——设置语义与生产一致
+func setupPresenceRouter(t *testing.T, thresholdSec int) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -29,12 +30,19 @@ func setupPresenceRouter(t *testing.T, threshold time.Duration) *gin.Engine {
 			sqlDB.Close()
 		}
 	})
+	if err := store.NewGormStore(store.DB).PutAgentSettings(context.Background(),
+		model.AgentSettings{
+			HeartbeatIntervalSec: 600, FullIntervalSec: 3600,
+			OfflineThresholdSec: thresholdSec,
+		}); err != nil {
+		t.Fatalf("seed agent settings: %v", err)
+	}
 
 	r := gin.New()
 	apiV1 := r.Group("/api/v1")
 	protected := apiV1.Group("/")
 	protected.Use(middleware.AuthMiddleware())
-	RegisterAssetRoutes(protected, threshold)
+	RegisterAssetRoutes(protected)
 	return r
 }
 
@@ -59,6 +67,8 @@ func seedPresenceAsset(t *testing.T, companyID int64, suffix, publicIP string, l
 		Hostname:   "PC-" + suffix,
 		OSName:     "Windows 11",
 		PublicIP:   publicIP,
+		// 漫游网络维的本机 IP：出口 IP 非空时视为直连公网（测试夹具口径）
+		IPAddress:  publicIP,
 		LastSeenAt: lastSeen,
 	}
 	if err := store.DB.Create(&device).Error; err != nil {
@@ -109,7 +119,7 @@ func fetchPresenceList(t *testing.T, r *gin.Engine, token string) map[int64]stri
 }
 
 func TestAssetsListPresenceLabels(t *testing.T) {
-	r := setupPresenceRouter(t, 15*time.Minute)
+	r := setupPresenceRouter(t, 900)
 	company := model.Company{Name: "presence测试公司-" + t.Name()}
 	if err := store.DB.Create(&company).Error; err != nil {
 		t.Fatalf("seed company: %v", err)
@@ -143,7 +153,7 @@ func TestAssetsListPresenceLabels(t *testing.T) {
 }
 
 func TestAssetsListPresenceSkipsAssetsWithoutDevice(t *testing.T) {
-	r := setupPresenceRouter(t, 15*time.Minute)
+	r := setupPresenceRouter(t, 900)
 	company := model.Company{Name: "presence无终端公司-" + t.Name()}
 	if err := store.DB.Create(&company).Error; err != nil {
 		t.Fatalf("seed company: %v", err)
@@ -159,9 +169,9 @@ func TestAssetsListPresenceSkipsAssetsWithoutDevice(t *testing.T) {
 }
 
 func TestAssetsListPresenceThresholdFromConfig(t *testing.T) {
-	// 阈值经 RegisterAssetRoutes 注入（源头是 server.json），
-	// 紧阈值下 10 分钟前的心跳已判失联，验证配置链路生效
-	r := setupPresenceRouter(t, 5*time.Minute)
+	// 阈值经 agent_settings 单例行（唯一源），紧阈值下 10 分钟前的
+	// 心跳已判失联，验证配置链路生效
+	r := setupPresenceRouter(t, 300)
 	company := model.Company{Name: "presence阈值公司-" + t.Name()}
 	if err := store.DB.Create(&company).Error; err != nil {
 		t.Fatalf("seed company: %v", err)

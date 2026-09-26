@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -33,11 +34,19 @@ func setupDashboardRouter(t *testing.T) *gin.Engine {
 		}
 	})
 
+	if err := store.NewGormStore(store.DB).PutAgentSettings(context.Background(),
+		model.AgentSettings{
+			HeartbeatIntervalSec: 600, FullIntervalSec: 3600,
+			OfflineThresholdSec: 900, // 测试阈值 15 分钟（stale 夹具 1h 必失联）
+		}); err != nil {
+		t.Fatalf("seed agent settings: %v", err)
+	}
+
 	r := gin.New()
 	apiV1 := r.Group("/api/v1")
 	protected := apiV1.Group("/")
 	protected.Use(middleware.AuthMiddleware())
-	RegisterDashboardRoutes(protected, 15*time.Minute)
+	RegisterDashboardRoutes(protected)
 	return r
 }
 

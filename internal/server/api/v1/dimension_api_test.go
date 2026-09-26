@@ -38,7 +38,7 @@ func setupDimensionRouter(t *testing.T) *gin.Engine {
 	protected.Use(middleware.AuthMiddleware())
 	RegisterDimensionRoutes(protected)
 	// 资产挂接/富化/过滤联动走既有资产路由面
-	RegisterAssetRoutes(protected, 15*time.Minute)
+	RegisterAssetRoutes(protected)
 	return r
 }
 

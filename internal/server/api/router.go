@@ -1,16 +1,15 @@
 package api
 
 import (
-	"time"
-
 	"itagent/internal/server/api/middleware"
 	"itagent/internal/server/store"
 	v1 "itagent/internal/server/api/v1"
 	"github.com/gin-gonic/gin"
 )
 
-// SetupRouter 初始化总路由树；offlineThreshold 为资产联系状态的离线判定阈值
-func SetupRouter(offlineThreshold time.Duration) *gin.Engine {
+// SetupRouter 初始化总路由树。失联阈值/采集频率不再注入：agent_settings
+// 单例是唯一源，各 handler 判定时实时读取
+func SetupRouter() *gin.Engine {
 	r := gin.Default()
 
 	// 基础跨域与健康检查
@@ -32,7 +31,7 @@ func SetupRouter(offlineThreshold time.Duration) *gin.Engine {
 		protected.Use(middleware.AuditLog(store.NewGormStore(store.DB)))
 		{
 			v1.RegisterCompanyRoutes(protected)
-			v1.RegisterAssetRoutes(protected, offlineThreshold)
+			v1.RegisterAssetRoutes(protected)
 			v1.RegisterAssetRepairRoutes(protected)
 			v1.RegisterStorageLendingRoutes(protected)
 			v1.RegisterPartRecordRoutes(protected)
@@ -52,7 +51,8 @@ func SetupRouter(offlineThreshold time.Duration) *gin.Engine {
 			v1.RegisterReportRoutes(protected)
 			v1.RegisterSoftwarePoolRoutes(protected)
 			v1.RegisterSoftwareComplianceRoutes(protected)
-			v1.RegisterDashboardRoutes(protected, offlineThreshold)
+			v1.RegisterDashboardRoutes(protected)
+			v1.RegisterAgentSettingsRoutes(protected)
 		}
 	}
 

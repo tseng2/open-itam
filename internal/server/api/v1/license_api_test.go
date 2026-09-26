@@ -40,7 +40,7 @@ func setupLicenseRouter(t *testing.T) *gin.Engine {
 	protected.Use(middleware.AuthMiddleware())
 	RegisterLicenseRoutes(protected)
 	// 席位挂接走真实台账路由面（建账/编辑带 license_id）
-	RegisterAssetRoutes(protected, 15*time.Minute)
+	RegisterAssetRoutes(protected)
 	return r
 }
 

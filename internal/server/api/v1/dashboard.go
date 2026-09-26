@@ -17,20 +17,19 @@ import (
 // 大盘是跨公司全局口径；两者共用 model.AssetStatusName 段位与
 // 台账全量（含报废、软删行不计）的状态计数语义，禁止各自重写。
 //
-// 失联判定阈值由 SetupRouter 注入（源头 server.json offline_threshold_sec），
-// 活跃/失联公式与 model.ResolvePresence 完全一致：now - last_seen > 阈值即失联
+// 失联判定阈值不再启动注入：agent_settings 单例是唯一源，
+// 判定时经 EffectivePresenceTimeout 实时读取（公式同 ResolvePresence）：
+// now - last_seen > 阈值即失联
 
 // dashboardAgentVersionTopN Agent 版本分布返回条数上限（计数降序截断），
 // 防御病态多版本刷爆载荷；大盘 UI 只展示前几行
 const dashboardAgentVersionTopN = 5
 
-type DashboardHandler struct {
-	offlineThreshold time.Duration
-}
+type DashboardHandler struct{}
 
 // RegisterDashboardRoutes 大盘汇总：只读、全员登录可读（不带 RoleMiddleware）
-func RegisterDashboardRoutes(protected *gin.RouterGroup, offlineThreshold time.Duration) {
-	h := &DashboardHandler{offlineThreshold: offlineThreshold}
+func RegisterDashboardRoutes(protected *gin.RouterGroup) {
+	h := &DashboardHandler{}
 	dashboard := protected.Group("/dashboard")
 	dashboard.GET("/summary", h.Summary)
 }
@@ -114,7 +113,7 @@ func (h *DashboardHandler) Summary(c *gin.Context) {
 	for _, d := range devices {
 		s.Devices.Total++
 		// 失联公式同 ResolvePresence：now - last_seen > 阈值
-		if now.Sub(d.LastSeenAt) > h.offlineThreshold {
+		if now.Sub(d.LastSeenAt) > EffectivePresenceTimeout() {
 			s.Devices.Missing++
 		} else {
 			s.Devices.Active++

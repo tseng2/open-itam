@@ -21,10 +21,8 @@ func setup(t *testing.T) *Handler {
 	}
 	t.Cleanup(func() { s.Close() })
 	return NewHandler(s, Config{
-		InstallToken:        "install-secret",
-		AdminToken:          "admin-secret",
-		DefaultHeartbeatSec: 600,
-		DefaultFullSec:      3600,
+		InstallToken: "install-secret",
+		AdminToken:   "admin-secret",
 	})
 }
 
@@ -93,7 +91,9 @@ func TestAgentConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("agent config status=%d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"heartbeat_interval_sec":600`) {
+	// 采集频率下发源已迁 agent_settings：store.DB 未初始化的纯老栈测试
+	// 环境回落内置默认（3600/21600）
+	if !strings.Contains(rec.Body.String(), `"heartbeat_interval_sec":3600`) {
 		t.Fatalf("unexpected agent config: %s", rec.Body.String())
 	}
 
@@ -167,7 +167,8 @@ func TestIngestFlow(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode ingest resp: %v", err)
 	}
-	if resp.Code != 0 || resp.NextHeartbeatSec != 600 || resp.NextFullSec != 3600 {
+	// 频率下发走 agent_settings 默认（3600/21600，无行回落）
+	if resp.Code != 0 || resp.NextHeartbeatSec != 3600 || resp.NextFullSec != 21600 {
 		t.Fatalf("unexpected ingest response: %+v", resp)
 	}
 }

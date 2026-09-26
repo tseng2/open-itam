@@ -40,10 +40,8 @@ func TestMain(m *testing.M) {
 func setupE2E(t *testing.T) http.Handler {
 	t.Helper()
 	return NewHandler(store.NewGormStore(store.DB), Config{
-		InstallToken:   "install-secret",
-		AdminToken:     "admin-secret",
-		DefaultHeartbeatSec: 600,
-		DefaultFullSec:      3600,
+		InstallToken: "install-secret",
+		AdminToken:   "admin-secret",
 	})
 }
 

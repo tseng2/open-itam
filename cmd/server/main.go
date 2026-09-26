@@ -25,12 +25,8 @@ type serverConfig struct {
 	Listen              string `json:"listen"`
 	DBType              string `json:"db_type"`
 	DBPath              string `json:"db_path"`
-	InstallToken        string `json:"install_token"`
-	AdminToken          string `json:"admin_token"`
-	DefaultHeartbeatSec int    `json:"default_heartbeat_sec"`
-	DefaultFullSec      int    `json:"default_full_sec"`
-	// A2 失联语义分层：资产联系状态的离线判定阈值（秒），0 = 服务端默认 15 分钟
-	OfflineThresholdSec int `json:"offline_threshold_sec"`
+	InstallToken string `json:"install_token"`
+	AdminToken   string `json:"admin_token"`
 	// Agent 更新清单（version/file/sha256），默认 data/updates/manifest.json
 	UpdateManifest string `json:"update_manifest"`
 	// JWT 签名密钥（任务 B 配置化）：未配置回落内置默认并启动告警；
@@ -68,12 +64,6 @@ func main() {
 	if cfg.InstallToken == "" || cfg.AdminToken == "" {
 		log.Fatal("install_token and admin_token must be set in config")
 	}
-	if cfg.DefaultHeartbeatSec == 0 {
-		cfg.DefaultHeartbeatSec = 600
-	}
-	if cfg.DefaultFullSec == 0 {
-		cfg.DefaultFullSec = 3600
-	}
 	if cfg.UpdateManifest == "" {
 		cfg.UpdateManifest = "data/updates/manifest.json"
 	}
@@ -104,12 +94,9 @@ func main() {
 	st := store.NewGormStore(db)
 
 	h := api.NewHandler(st, api.Config{
-		InstallToken:        cfg.InstallToken,
-		AdminToken:          cfg.AdminToken,
-		DefaultHeartbeatSec: cfg.DefaultHeartbeatSec,
-		DefaultFullSec:      cfg.DefaultFullSec,
-		OfflineThresholdSec: cfg.OfflineThresholdSec,
-		UpdateManifest:      cfg.UpdateManifest,
+		InstallToken:  cfg.InstallToken,
+		AdminToken:    cfg.AdminToken,
+		UpdateManifest: cfg.UpdateManifest,
 	})
 
 	root := ui.Wrap(h)
@@ -117,8 +104,10 @@ func main() {
 	// A4 告警引擎（双通道出站）：WebHook（配置开关控制）+ 站内信
 	//（注入 v1 闭包扇出公司管理员，独立于 WebHook 开关）。
 	// 单进程 goroutine + Ticker 定时扫描，无需分布式锁；
+	// 失联阈值与漫游地理基准经闭包实时读 agent_settings（设置页保存即生效）；
 	// ctx 随进程退出自动取消
-	alertEngine := webhook.NewEngine(db, st, api.ResolveOfflineThreshold(cfg.OfflineThresholdSec), v1.NewAlertNotifier())
+	alertEngine := webhook.NewEngine(db, st,
+		v1.EffectivePresenceTimeout, v1.EffectivePresenceGeo, v1.NewAlertNotifier())
 	engineCtx, stopEngine := context.WithCancel(context.Background())
 	defer stopEngine()
 	go alertEngine.Run(engineCtx, webhook.DefaultScanInterval)

@@ -32,24 +32,27 @@ func NotifyAlertType(alertType string) string {
 // WebHook 开关——系统内通道，WebHook 未配置也该收到）。
 // 单进程 goroutine + time.Ticker 定时扫描，无需分布式锁；
 // 扫描判定复用 model.ResolveAssetPresence（核心即 ResolvePresence），
-// 离线阈值与冷却窗口全部走配置，禁止硬编码
+// 阈值与漫游地理基准经函数注入（唯一源 agent_settings，设置页保存即生效
+// ——闭包实时读库，A4 静态注入 + main 组装的先例方向不变），禁止硬编码
 type Engine struct {
-	db               *gorm.DB
-	store            store.Store
-	offlineThreshold time.Duration
-	client           *http.Client
-	now              func() time.Time // 注入时钟，测试冷却边界用
-	notifier         AlertNotifier
+	db          *gorm.DB
+	store       store.Store
+	thresholdFn func() time.Duration
+	geoFn       func() model.PresenceGeo
+	client      *http.Client
+	now         func() time.Time // 注入时钟，测试冷却边界用
+	notifier    AlertNotifier
 }
 
-func NewEngine(db *gorm.DB, st store.Store, offlineThreshold time.Duration, notifier AlertNotifier) *Engine {
+func NewEngine(db *gorm.DB, st store.Store, thresholdFn func() time.Duration, geoFn func() model.PresenceGeo, notifier AlertNotifier) *Engine {
 	return &Engine{
-		db:               db,
-		store:            st,
-		offlineThreshold: offlineThreshold,
-		client:           DefaultHTTPClient,
-		now:              time.Now,
-		notifier:         notifier,
+		db:          db,
+		store:       st,
+		thresholdFn: thresholdFn,
+		geoFn:       geoFn,
+		client:      DefaultHTTPClient,
+		now:         time.Now,
+		notifier:    notifier,
 	}
 }
 
@@ -84,7 +87,7 @@ func (e *Engine) ScanOnce(ctx context.Context) (int, error) {
 		dispatchByAsset[dispatches[i].AssetID] = &dispatches[i]
 	}
 
-	alerts := BuildAlerts(assets, dispatchByAsset, now, e.offlineThreshold)
+	alerts := BuildAlerts(assets, dispatchByAsset, now, e.thresholdFn(), e.geoFn())
 	if len(alerts) == 0 {
 		return 0, nil
 	}

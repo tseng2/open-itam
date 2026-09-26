@@ -37,7 +37,7 @@ func setupAssetExchangeRouter(t *testing.T) *gin.Engine {
 	apiV1 := r.Group("/api/v1")
 	protected := apiV1.Group("/")
 	protected.Use(middleware.AuthMiddleware())
-	RegisterAssetRoutes(protected, time.Minute)
+	RegisterAssetRoutes(protected)
 	return r
 }
 
