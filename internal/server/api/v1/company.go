@@ -62,6 +62,7 @@ type CreateCompanyRequest struct {
 	Name   string `json:"name" binding:"required"`
 	Code   string `json:"code" binding:"required"`
 	Domain string `json:"domain"`
+	Region string `json:"region"`
 }
 
 // companyNameTaken 名称占用检查：与 DB 唯一索引同口径（Unscoped 含软删行）
@@ -77,6 +78,33 @@ func companyNameTaken(id int64, name string) bool {
 	return cnt > 0
 }
 
+// normalizeCompanyRegion 公司区域归一：整体与分段 trim、丢弃空段重拼——
+// 组织页录入「广东省 | 东莞市」也能落成干净口径；空串原样放行（跳过地理维）
+func normalizeCompanyRegion(region string) string {
+	region = strings.TrimSpace(region)
+	if region == "" {
+		return ""
+	}
+	parts := strings.Split(region, "|")
+	normalized := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			normalized = append(normalized, p)
+		}
+	}
+	return strings.Join(normalized, "|")
+}
+
+// validCompanyRegion 区域格式校验（归一后）：空合法（该公司资产跳过地理维）；
+// 非空须为「省」或「省|市」一到两段（与 ip2region 库名口径一致，
+// 三段以上 400——市级比对只认省级 + 市级两层）
+func validCompanyRegion(region string) bool {
+	if region == "" {
+		return true
+	}
+	return len(strings.Split(region, "|")) <= 2
+}
+
 func (h *CompanyHandler) Create(c *gin.Context) {
 	var req CreateCompanyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -88,6 +116,11 @@ func (h *CompanyHandler) Create(c *gin.Context) {
 		Fail(c, http.StatusBadRequest, 40001, "公司名称必填")
 		return
 	}
+	region := normalizeCompanyRegion(req.Region)
+	if !validCompanyRegion(region) {
+		Fail(c, http.StatusBadRequest, 40001, "公司区域格式须为「省|市」（如：广东省|东莞市）")
+		return
+	}
 	if companyNameTaken(0, name) {
 		Fail(c, http.StatusConflict, 40901, "已存在同名公司")
 		return
@@ -96,6 +129,7 @@ func (h *CompanyHandler) Create(c *gin.Context) {
 		Name:   name,
 		Code:   strings.TrimSpace(req.Code),
 		Domain: strings.TrimSpace(req.Domain),
+		Region: region,
 	}
 	if err := store.DB.Create(&company).Error; err != nil {
 		Fail(c, http.StatusInternalServerError, 50002, "创建公司失败")
@@ -108,6 +142,7 @@ type UpdateCompanyRequest struct {
 	Name   string `json:"name" binding:"required"`
 	Code   string `json:"code"`
 	Domain string `json:"domain"`
+	Region string `json:"region"`
 }
 
 func (h *CompanyHandler) Update(c *gin.Context) {
@@ -131,6 +166,11 @@ func (h *CompanyHandler) Update(c *gin.Context) {
 		Fail(c, http.StatusBadRequest, 40001, "公司名称必填")
 		return
 	}
+	region := normalizeCompanyRegion(req.Region)
+	if !validCompanyRegion(region) {
+		Fail(c, http.StatusBadRequest, 40001, "公司区域格式须为「省|市」（如：广东省|东莞市）")
+		return
+	}
 	if companyNameTaken(company.ID, name) {
 		Fail(c, http.StatusConflict, 40901, "已存在同名公司")
 		return
@@ -139,6 +179,7 @@ func (h *CompanyHandler) Update(c *gin.Context) {
 		"name":   name,
 		"code":   strings.TrimSpace(req.Code),
 		"domain": strings.TrimSpace(req.Domain),
+		"region": region,
 		// 兼容既有写法：更新时也把 updated_at 归一（UTC）
 		"updated_at": time.Now().UTC(),
 	}

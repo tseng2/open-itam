@@ -26,7 +26,7 @@ func TestAgentSettingsSingleton(t *testing.T) {
 	// 保存自定义值：upsert 落库
 	want := model.AgentSettings{
 		HeartbeatIntervalSec: 1800, FullIntervalSec: 14400,
-		OfflineThresholdSec: 2400, CompanyProvince: "江苏省",
+		OfflineThresholdSec: 2400,
 	}
 	if err := s.PutAgentSettings(ctx, want); err != nil {
 		t.Fatalf("put agent settings: %v", err)
@@ -37,7 +37,7 @@ func TestAgentSettingsSingleton(t *testing.T) {
 	}
 	want.ID = model.AgentSettingsSingletonID
 	if got.HeartbeatIntervalSec != 1800 || got.FullIntervalSec != 14400 ||
-		got.OfflineThresholdSec != 2400 || got.CompanyProvince != "江苏省" || got.ID != want.ID {
+		got.OfflineThresholdSec != 2400 || got.ID != want.ID {
 		t.Fatalf("round-trip mismatch: got %+v", got)
 	}
 

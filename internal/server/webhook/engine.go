@@ -32,19 +32,21 @@ func NotifyAlertType(alertType string) string {
 // WebHook 开关——系统内通道，WebHook 未配置也该收到）。
 // 单进程 goroutine + time.Ticker 定时扫描，无需分布式锁；
 // 扫描判定复用 model.ResolveAssetPresence（核心即 ResolvePresence），
-// 阈值与漫游地理基准经函数注入（唯一源 agent_settings，设置页保存即生效
-// ——闭包实时读库，A4 静态注入 + main 组装的先例方向不变），禁止硬编码
+// 阈值经函数注入（唯一源 agent_settings，设置页保存即生效），
+// 漫游地理基准按资产所属公司取 companies.region——geoFn 收到本批
+// 资产涉及的公司 ID 集合后批量 IN 查注入（闭包实时读库，
+// A4 静态注入 + main 组装的先例方向不变），禁止硬编码
 type Engine struct {
 	db          *gorm.DB
 	store       store.Store
 	thresholdFn func() time.Duration
-	geoFn       func() model.PresenceGeo
+	geoFn       func(companyIDs []int64) model.PresenceGeo
 	client      *http.Client
 	now         func() time.Time // 注入时钟，测试冷却边界用
 	notifier    AlertNotifier
 }
 
-func NewEngine(db *gorm.DB, st store.Store, thresholdFn func() time.Duration, geoFn func() model.PresenceGeo, notifier AlertNotifier) *Engine {
+func NewEngine(db *gorm.DB, st store.Store, thresholdFn func() time.Duration, geoFn func([]int64) model.PresenceGeo, notifier AlertNotifier) *Engine {
 	return &Engine{
 		db:          db,
 		store:       st,
@@ -87,7 +89,17 @@ func (e *Engine) ScanOnce(ctx context.Context) (int, error) {
 		dispatchByAsset[dispatches[i].AssetID] = &dispatches[i]
 	}
 
-	alerts := BuildAlerts(assets, dispatchByAsset, now, e.thresholdFn(), e.geoFn())
+	// 漫游地理基准按公司批量取（防 N+1）：收集本批资产涉及的公司 ID
+	companyIDs := make([]int64, 0, len(assets))
+	seen := make(map[int64]bool, len(assets))
+	for i := range assets {
+		if !seen[assets[i].CompanyID] {
+			seen[assets[i].CompanyID] = true
+			companyIDs = append(companyIDs, assets[i].CompanyID)
+		}
+	}
+
+	alerts := BuildAlerts(assets, dispatchByAsset, now, e.thresholdFn(), e.geoFn(companyIDs))
 	if len(alerts) == 0 {
 		return 0, nil
 	}

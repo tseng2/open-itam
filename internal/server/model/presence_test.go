@@ -44,17 +44,32 @@ func TestResolvePresenceRoamingByLocalPublicIP(t *testing.T) {
 	}
 }
 
-func TestResolvePresenceRoamingByEgressProvince(t *testing.T) {
+// 地理维·异省：东莞公司（基准 广东省|东莞市）出口在苏州 → 漫游
+func TestResolvePresenceRoamingByCrossProvinceEgress(t *testing.T) {
 	now, threshold := presenceFixture()
-	// 地理维：本机私网（酒店/客户现场 NAT）但出口 IP 异省
 	got := ResolvePresence(PresenceInput{
 		Now: now, HeartbeatTimeout: threshold,
 		LastSeenAt: now.Add(-5 * time.Minute),
-		PublicIP:   "114.114.114.114", LocalIP: "192.168.1.10",
-		EgressCountry: "中国", EgressProvince: "江苏省", HomeProvince: "广东省",
+		PublicIP:     "114.114.114.114", LocalIP: "192.168.1.10",
+		EgressCountry: "中国", EgressRegion: "江苏省|南京市", HomeRegion: "广东省|东莞市",
 	})
 	if got != PresenceRoaming {
 		t.Fatalf("cross-province egress must be roaming, got %q", got)
+	}
+}
+
+// 地理维·同省异市（2026-09-26 市级升级的业务规则）：东莞公司的电脑
+// 跑到广州（同省不同市）也算漫游——省级基准时代整省出差都不算的缺口收口
+func TestResolvePresenceRoamingBySameProvinceDiffCity(t *testing.T) {
+	now, threshold := presenceFixture()
+	got := ResolvePresence(PresenceInput{
+		Now: now, HeartbeatTimeout: threshold,
+		LastSeenAt: now.Add(-5 * time.Minute),
+		PublicIP:     "203.0.113.7", LocalIP: "192.168.1.10",
+		EgressCountry: "中国", EgressRegion: "广东省|广州市", HomeRegion: "广东省|东莞市",
+	})
+	if got != PresenceRoaming {
+		t.Fatalf("same-province diff-city egress must be roaming, got %q", got)
 	}
 }
 
@@ -64,39 +79,66 @@ func TestResolvePresenceRoamingByOverseasEgress(t *testing.T) {
 	got := ResolvePresence(PresenceInput{
 		Now: now, HeartbeatTimeout: threshold,
 		LastSeenAt: now.Add(-5 * time.Minute),
-		PublicIP:   "8.8.8.8", LocalIP: "192.168.1.10",
-		EgressCountry: "United States",
+		PublicIP: "8.8.8.8", LocalIP: "192.168.1.10",
+		EgressCountry: "United States", EgressRegion: "California",
 	})
 	if got != PresenceRoaming {
 		t.Fatalf("overseas egress must be roaming, got %q", got)
 	}
 }
 
+// 公司 NAT：出口在所属公司区域内（省|市全同）+ 本机私网 → 在线
 func TestResolvePresenceCompanyNatIsOnline(t *testing.T) {
 	now, threshold := presenceFixture()
-	// 修复目标场景：公司统一出口 NAT（出口 IP 与公司同省）+ 本机私网 → 在线
+	// 修复目标场景：公司统一出口 NAT + 本机私网 → 在线
 	got := ResolvePresence(PresenceInput{
 		Now: now, HeartbeatTimeout: threshold,
 		LastSeenAt: now.Add(-5 * time.Minute),
-		PublicIP:   "61.142.9.88", LocalIP: "172.20.36.7/24",
-		EgressCountry: "中国", EgressProvince: "广东省", HomeProvince: "广东省",
+		PublicIP: "61.142.9.88", LocalIP: "172.20.36.7/24",
+		EgressCountry: "中国", EgressRegion: "广东省|东莞市", HomeRegion: "广东省|东莞市",
 	})
 	if got != PresenceOnline {
 		t.Fatalf("company NAT must be online, got %q", got)
 	}
 }
 
-func TestResolvePresenceGeoUnknownDegradesToOnline(t *testing.T) {
+// 公司未配置 region（空基准）→ 跳过地理维（宁漏报不误报），只保留网络维
+func TestResolvePresenceCompanyWithoutRegionSkipsGeo(t *testing.T) {
 	now, threshold := presenceFixture()
-	// GeoIP 解析不出（空段/库不可用/内网保留 IP）且本机私网 → 跳过地理维度，
-	// 宁漏报漫游不误报在线（无 RegionOf 注入的调用方同样落到这里）
 	got := ResolvePresence(PresenceInput{
 		Now: now, HeartbeatTimeout: threshold,
 		LastSeenAt: now.Add(-5 * time.Minute),
-		PublicIP:   "203.0.113.7", LocalIP: "10.1.1.5/24",
+		PublicIP: "114.114.114.114", LocalIP: "192.168.1.10",
+		EgressCountry: "中国", EgressRegion: "江苏省|南京市", HomeRegion: "",
 	})
 	if got != PresenceOnline {
-		t.Fatalf("unresolved geo must degrade to online, got %q", got)
+		t.Fatalf("company without region must skip geo dimension, got %q", got)
+	}
+}
+
+// 市级降级宽口径：任一侧城市段缺失时按省级比对——公司只配省级基准
+// （companies.region 只填「广东省」）或库解析不出城市段都不误报
+func TestResolvePresenceProvinceLevelFallback(t *testing.T) {
+	now, threshold := presenceFixture()
+	// 公司基准只配省段：同省异市出口不判漫游（省级宽口径容错）
+	got := ResolvePresence(PresenceInput{
+		Now: now, HeartbeatTimeout: threshold,
+		LastSeenAt: now.Add(-5 * time.Minute),
+		PublicIP: "203.0.113.7", LocalIP: "192.168.1.10",
+		EgressCountry: "中国", EgressRegion: "广东省|广州市", HomeRegion: "广东省",
+	})
+	if got != PresenceOnline {
+		t.Fatalf("province-only home region must compare at province level, got %q", got)
+	}
+	// 出口解析不出城市段（省级宽口径）；异省仍要漫游
+	got = ResolvePresence(PresenceInput{
+		Now: now, HeartbeatTimeout: threshold,
+		LastSeenAt: now.Add(-5 * time.Minute),
+		PublicIP: "203.0.113.7", LocalIP: "192.168.1.10",
+		EgressCountry: "中国", EgressRegion: "江苏省", HomeRegion: "广东省|东莞市",
+	})
+	if got != PresenceRoaming {
+		t.Fatalf("province-level egress in other province must be roaming, got %q", got)
 	}
 }
 
@@ -240,35 +282,86 @@ func TestIsPubliclyRoutedIP(t *testing.T) {
 	}
 }
 
+// 市级比对核心（regionMismatch + joinRegion）表驱动锁死口径：
+// 异省漫游 / 同省异市漫游 / 同城在线 / 城市段缺失降级省级 / 空基准跳过
+func TestRegionMismatch(t *testing.T) {
+	cases := []struct {
+		egress, home string
+		want         bool
+	}{
+		{"江苏省|南京市", "广东省|东莞市", true},  // 异省
+		{"广东省|广州市", "广东省|东莞市", true},  // 同省异市（业务规则：也算漫游）
+		{"广东省|东莞市", "广东省|东莞市", false}, // 同城
+		{"广东省", "广东省|东莞市", false},       // 出口城市段缺失 → 省级宽口径
+		{"广东省|广州市", "广东省", false},       // 基准只配省级 → 省级宽口径
+		{"江苏省", "广东省|东莞市", true},        // 城市段缺失但异省仍漫游
+		{"", "广东省|东莞市", false},            // 解析不出 → 跳过
+		{"广东省|东莞市", "", false},            // 未配置基准 → 跳过
+		{"", "", false},                      // 双空
+	}
+	for _, c := range cases {
+		if got := regionMismatch(c.egress, c.home); got != c.want {
+			t.Errorf("regionMismatch(%q, %q) = %v, want %v", c.egress, c.home, got, c.want)
+		}
+	}
+	if got := joinRegion("广东省", "东莞市"); got != "广东省|东莞市" {
+		t.Errorf("joinRegion with city = %q", got)
+	}
+	if got := joinRegion("广东省", ""); got != "广东省" {
+		t.Errorf("joinRegion without city = %q", got)
+	}
+	if got := joinRegion("", "东莞市"); got != "" {
+		t.Errorf("joinRegion without province = %q", got)
+	}
+}
+
+// 批量判定 + 按公司基准的直接实证（2026-09-26 市级升级）：
+// 同一出口 IP，东莞公司资产 → 漫游、苏州公司资产 → 在线——
+// 多公司各归各基准，RegionByCompany 注入取代全局省份白名单
 func TestResolveAssetPresenceBatch(t *testing.T) {
 	now, threshold := presenceFixture()
 	geo := PresenceGeo{
-		HomeProvince: "广东省",
-		RegionOf: func(ip string) (string, string) {
+		RegionByCompany: map[int64]string{
+			1: "广东省|东莞市", // 东莞总部
+			2: "江苏省|苏州市", // 苏州分公司
+		},
+		RegionOf: func(ip string) (string, string, string) {
 			switch ip {
 			case "61.142.9.88":
-				return "中国", "广东省" // 公司出口
+				return "中国", "广东省", "东莞市" // 东莞公司出口
+			case "203.0.113.8":
+				return "中国", "江苏省", "苏州市" // 苏州公司出口
 			case "114.114.114.114":
-				return "中国", "江苏省" // 异省出口
+				return "中国", "江苏省", "南京市" // 异省出口
 			case "8.8.8.8":
-				return "United States", "California"
+				return "United States", "California", ""
 			}
-			return "", ""
+			return "", "", ""
 		},
 	}
 	assets := []Asset{
 		{BaseModel: BaseModel{ID: 1}, Device: &Device{LastSeenAt: now.Add(-5 * time.Minute)}}, // 在线
-		{BaseModel: BaseModel{ID: 2}, Device: &Device{LastSeenAt: now.Add(-time.Hour)}},        // 失联
+		{BaseModel: BaseModel{ID: 2}, Device: &Device{LastSeenAt: now.Add(-time.Hour)}},      // 失联
 		{BaseModel: BaseModel{ID: 3}}, // 无终端：跳过
-		// 公司 NAT：出口同省 + 本机私网 → 在线（修复目标场景）
-		{BaseModel: BaseModel{ID: 4}, Device: &Device{
-			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "172.20.36.7/24", PublicIP: "61.142.9.88"}},
-		// 异省出口 → 漫游
-		{BaseModel: BaseModel{ID: 5}, Device: &Device{
+		// 苏州公司资产在苏州出口 → 在线（本地即基准）
+		{BaseModel: BaseModel{ID: 4}, CompanyID: 2, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "172.20.36.7/24", PublicIP: "203.0.113.8"}},
+		// 东莞公司资产跑到苏州出口 → 漫游（异省）
+		{BaseModel: BaseModel{ID: 5}, CompanyID: 1, Device: &Device{
 			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.10", PublicIP: "114.114.114.114"}},
+		// 东莞公司资产在公司出口（同城）→ 在线
+		{BaseModel: BaseModel{ID: 6}, CompanyID: 1, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.11", PublicIP: "61.142.9.88"}},
+		// 苏州公司资产在东莞公司出口 → 漫游（同一出口、反向断言：
+		// 资产 6 在线而资产 7 漫游，证明基准按资产所属公司取）
+		{BaseModel: BaseModel{ID: 7}, CompanyID: 2, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.12", PublicIP: "61.142.9.88"}},
 		// 海外出口 → 漫游
-		{BaseModel: BaseModel{ID: 6}, Device: &Device{
-			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.11", PublicIP: "8.8.8.8"}},
+		{BaseModel: BaseModel{ID: 8}, CompanyID: 1, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.13", PublicIP: "8.8.8.8"}},
+		// 公司未配置 region（ID 99 未登记）→ 跳过地理维
+		{BaseModel: BaseModel{ID: 9}, CompanyID: 99, Device: &Device{
+			LastSeenAt: now.Add(-5 * time.Minute), IPAddress: "192.168.1.14", PublicIP: "114.114.114.114"}},
 	}
 	dispatchByAsset := map[int64]*AssetDispatch{
 		2: activeDispatch(now.Add(time.Hour), true), // 外派隔离未超期：预期内离线
@@ -277,7 +370,8 @@ func TestResolveAssetPresenceBatch(t *testing.T) {
 
 	expect := map[int64]string{
 		1: PresenceOnline, 2: PresenceDispatchOffline, 3: "",
-		4: PresenceOnline, 5: PresenceRoaming, 6: PresenceRoaming,
+		4: PresenceOnline, 5: PresenceRoaming, 6: PresenceOnline,
+		7: PresenceRoaming, 8: PresenceRoaming, 9: PresenceOnline,
 	}
 	for i, a := range assets {
 		if a.Presence != expect[a.ID] {

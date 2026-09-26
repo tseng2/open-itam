@@ -17,9 +17,11 @@ import (
 // 读写均 admin（Settings 页管理面）；Agent 侧经老栈 agent/config 与
 // ingest 响应接收下发，不直接访问本端点。
 //
-// EffectiveAgentSettings 是全部消费点的统一入口（阈值判定/频率下发/
-// 漫游地理基准）——设置页保存立即生效（每次判定实时读库），进程内
-// 不做缓存，避免「改了配置要重启」的隐性契约
+// EffectiveAgentSettings 是全部消费点的统一入口（阈值判定/频率下发）——
+// 设置页保存立即生效（每次判定实时读库），进程内不做缓存，
+// 避免「改了配置要重启」的隐性契约。
+// 漫游地理基准不在此面（2026-09-26 市级升级）：基准按资产所属公司
+// 取 companies.region（组织页维护），原全局 company_province 字段已删
 
 // EffectiveAgentSettings 读取生效配置：单例行优先，无行 / 查询失败 /
 // store 未初始化（纯单测环境）回落内置默认。全字段防御归一由保存校验
@@ -41,13 +43,28 @@ func EffectivePresenceTimeout() time.Duration {
 	return model.ResolveOfflineThreshold(EffectiveAgentSettings().OfflineThresholdSec)
 }
 
-// EffectivePresenceGeo 漫游判定的地理维度注入（公司省 + 内嵌 GeoIP 库）。
-// 库不可用时 RegionOf 恒返回空——presence 判定自动跳过地理维度
-func EffectivePresenceGeo() model.PresenceGeo {
-	return model.PresenceGeo{
-		HomeProvince: EffectiveAgentSettings().CompanyProvince,
-		RegionOf:     geoip.RegionOf,
+// PresenceGeoFor 漫游判定的地理维度注入（公司 region 基准 + 内嵌 GeoIP 库）。
+// 按资产所属公司批量取基准：对传入的公司 ID 集合做**一次 IN 查**
+// companies（防 N+1，禁止逐资产查询）；region 为空 / 未登记的公司
+// 不入映射——其资产在判定里跳过地理维（宁漏报不误报）。
+// 库不可用时 RegionOf 恒返回空，地理维自动降级
+func PresenceGeoFor(companyIDs []int64) model.PresenceGeo {
+	geo := model.PresenceGeo{RegionOf: geoip.RegionOf}
+	if len(companyIDs) == 0 || store.DB == nil {
+		return geo
 	}
+	var companies []model.Company
+	if err := store.DB.Select("id", "region").Where("id IN ?", companyIDs).Find(&companies).Error; err != nil {
+		return geo // 查询失败整体跳过地理维，不拦业务
+	}
+	regions := make(map[int64]string, len(companies))
+	for _, c := range companies {
+		if c.Region != "" {
+			regions[c.ID] = c.Region
+		}
+	}
+	geo.RegionByCompany = regions
+	return geo
 }
 
 type AgentSettingsHandler struct{}
@@ -65,17 +82,15 @@ func (h *AgentSettingsHandler) Get(c *gin.Context) {
 }
 
 type UpdateAgentSettingsRequest struct {
-	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec" binding:"required"`
-	FullIntervalSec      int    `json:"full_interval_sec" binding:"required"`
-	OfflineThresholdSec  int    `json:"offline_threshold_sec" binding:"required"`
-	CompanyProvince      string `json:"company_province"`
+	HeartbeatIntervalSec int `json:"heartbeat_interval_sec" binding:"required"`
+	FullIntervalSec      int `json:"full_interval_sec" binding:"required"`
+	OfflineThresholdSec  int `json:"offline_threshold_sec" binding:"required"`
 }
 
 // Update 保存配置（全字段必填 PUT）。联动红线校验：
 // 频率与阈值均须为正；full ≥ heartbeat（全量是心跳的超集动作）；
 // 阈值必须大于心跳周期——否则健康终端的心跳间隔本身就击穿阈值，
-// 全员假失联。公司省份可空（空 = 跳过地理维判定），非空须与
-// ip2region 库名口径一致（如「广东省」）
+// 全员假失联
 func (h *AgentSettingsHandler) Update(c *gin.Context) {
 	var req UpdateAgentSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -98,9 +113,8 @@ func (h *AgentSettingsHandler) Update(c *gin.Context) {
 	cfg := model.AgentSettings{
 		ID:                  model.AgentSettingsSingletonID,
 		HeartbeatIntervalSec: req.HeartbeatIntervalSec,
-		FullIntervalSec:      req.FullIntervalSec,
-		OfflineThresholdSec:  req.OfflineThresholdSec,
-		CompanyProvince:      req.CompanyProvince,
+		FullIntervalSec:     req.FullIntervalSec,
+		OfflineThresholdSec: req.OfflineThresholdSec,
 	}
 	if err := store.NewGormStore(store.DB).PutAgentSettings(c.Request.Context(), cfg); err != nil {
 		Fail(c, http.StatusInternalServerError, 50001, "保存采集配置失败")

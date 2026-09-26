@@ -15,9 +15,9 @@ import (
 )
 
 // AssetHandler 资产台账管理接口。
-// 失联阈值与漫游地理基准不再启动注入：agent_settings 单例是唯一源
-// （设置页保存即生效），判定时经 EffectivePresenceTimeout / EffectivePresenceGeo
-// 实时读取，禁止在业务逻辑硬编码
+// 失联阈值与漫游地理基准不再启动注入：阈值唯一源 agent_settings 单例
+// （设置页保存即生效），地理基准按资产所属公司取 companies.region
+// （组织页维护），判定时实时读取，禁止在业务逻辑硬编码
 type AssetHandler struct{}
 
 func RegisterAssetRoutes(r *gin.RouterGroup) {
@@ -183,13 +183,20 @@ func (h *AssetHandler) List(c *gin.Context) {
 }
 
 // enrichPresence 批量计算资产联系状态（A2 失联语义分层 + 漫游双维）：
-// 一次 IN 查询取全部进行中外派，避免逐资产 N+1；判定核心复用
-// model.ResolveAssetPresence（A4 Webhook 扫描与之共用同一实现），
-// 阈值/公司省/GeoIP 注入统一走 agent_settings 生效配置
+// 一次 IN 查询取全部进行中外派、一次 IN 查询取涉及公司的 region 基准
+// （均防逐资产 N+1）；判定核心复用 model.ResolveAssetPresence
+// （A4 Webhook 扫描与之共用同一实现），阈值走 agent_settings 生效配置，
+// 地理基准按资产所属公司注入
 func (h *AssetHandler) enrichPresence(ctx context.Context, items []model.Asset) error {
 	assetIDs := make([]int64, 0, len(items))
+	companyIDs := make([]int64, 0, len(items))
+	seenCompany := make(map[int64]bool, len(items))
 	for _, a := range items {
 		assetIDs = append(assetIDs, a.ID)
+		if !seenCompany[a.CompanyID] {
+			seenCompany[a.CompanyID] = true
+			companyIDs = append(companyIDs, a.CompanyID)
+		}
 	}
 	var dispatches []model.AssetDispatch
 	if err := store.DB.WithContext(ctx).
@@ -203,7 +210,7 @@ func (h *AssetHandler) enrichPresence(ctx context.Context, items []model.Asset) 
 	}
 
 	model.ResolveAssetPresence(items, dispatchByAsset, time.Now().UTC(),
-		EffectivePresenceTimeout(), EffectivePresenceGeo())
+		EffectivePresenceTimeout(), PresenceGeoFor(companyIDs))
 	return nil
 }
 

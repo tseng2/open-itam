@@ -15,7 +15,9 @@ import (
 
 // Agent 采集配置面契约：GET 未保存回落内置默认、PUT 联动校验
 //（阈值必须大于心跳/full 不小于心跳/正整数）、保存后生效读一致、
-// user 角色 403（读写均 admin）、未登录 401
+// user 角色 403（读写均 admin）、未登录 401。
+// 漫游地理基准已迁出本面（companies.region，组织页维护）——
+// 响应不再携带 company_province 字段
 
 func setupAgentSettingsRouter(t *testing.T) *gin.Engine {
 	t.Helper()
@@ -60,10 +62,21 @@ func TestAgentSettingsGetReturnsDefaults(t *testing.T) {
 	r := setupAgentSettingsRouter(t)
 	admin := adminToken(t)
 
-	got := decodeSettingsData(t, doSettingsJSON(t, r, http.MethodGet, "/api/v1/agent-settings", admin, nil))
+	rec := doSettingsJSON(t, r, http.MethodGet, "/api/v1/agent-settings", admin, nil)
+	got := decodeSettingsData(t, rec)
 	def := model.DefaultAgentSettings()
 	if got != def {
 		t.Fatalf("unsaved store must return defaults, got %+v", got)
+	}
+	// company_province 已删：响应不得再携带该字段
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	if data, ok := raw["data"].(map[string]any); ok {
+		if _, exists := data["company_province"]; exists {
+			t.Fatalf("company_province must be gone from response: %v", data)
+		}
 	}
 
 	// 未登录 401；user 角色读面也收口 admin
@@ -81,7 +94,7 @@ func TestAgentSettingsUpdateValidatesAndPersists(t *testing.T) {
 	admin := adminToken(t)
 
 	// 联动红线：阈值 ≤ 心跳 → 400
-	bad := map[string]any{"heartbeat_interval_sec": 3600, "full_interval_sec": 21600, "offline_threshold_sec": 3600, "company_province": "广东省"}
+	bad := map[string]any{"heartbeat_interval_sec": 3600, "full_interval_sec": 21600, "offline_threshold_sec": 3600}
 	if rec := doSettingsJSON(t, r, http.MethodPut, "/api/v1/agent-settings", admin, bad); rec.Code != http.StatusBadRequest {
 		t.Fatalf("threshold == heartbeat must 400, http=%d", rec.Code)
 	}
@@ -98,14 +111,13 @@ func TestAgentSettingsUpdateValidatesAndPersists(t *testing.T) {
 	}
 
 	// 合法保存 → 生效读一致（EffectiveAgentSettings 即此读路径）
-	good := map[string]any{"heartbeat_interval_sec": 1800, "full_interval_sec": 10800, "offline_threshold_sec": 2400, "company_province": "江苏省"}
+	good := map[string]any{"heartbeat_interval_sec": 1800, "full_interval_sec": 10800, "offline_threshold_sec": 2400}
 	rec := doSettingsJSON(t, r, http.MethodPut, "/api/v1/agent-settings", admin, good)
 	got := decodeSettingsData(t, rec)
-	if got.HeartbeatIntervalSec != 1800 || got.FullIntervalSec != 10800 ||
-		got.OfflineThresholdSec != 2400 || got.CompanyProvince != "江苏省" {
+	if got.HeartbeatIntervalSec != 1800 || got.FullIntervalSec != 10800 || got.OfflineThresholdSec != 2400 {
 		t.Fatalf("persisted mismatch: %+v", got)
 	}
-	if eff := EffectiveAgentSettings(); eff.HeartbeatIntervalSec != 1800 || eff.CompanyProvince != "江苏省" {
+	if eff := EffectiveAgentSettings(); eff.HeartbeatIntervalSec != 1800 || eff.OfflineThresholdSec != 2400 {
 		t.Fatalf("effective settings must reflect save immediately: %+v", eff)
 	}
 	if got := EffectivePresenceTimeout(); got.Seconds() != 2400 {
@@ -116,5 +128,37 @@ func TestAgentSettingsUpdateValidatesAndPersists(t *testing.T) {
 	if rec := doSettingsJSON(t, r, http.MethodPut, "/api/v1/agent-settings",
 		userTokenFor(t, 12, "plain_user2", "user"), good); rec.Code != http.StatusForbidden {
 		t.Fatalf("user role put: http=%d", rec.Code)
+	}
+}
+
+// PresenceGeoFor 契约：按公司 ID 批量取 region 基准（IN 查防 N+1）、
+// 空 region / 未登记公司不入映射（跳过地理维）、空 ID 集合安全返回
+func TestPresenceGeoForCompanyRegions(t *testing.T) {
+	setupAgentSettingsRouter(t) // 只为初始化 store.DB
+
+	dg := model.Company{Name: "区域基准公司甲", Code: "RGA", Region: "广东省|东莞市"}
+	if err := store.DB.Create(&dg).Error; err != nil {
+		t.Fatalf("seed company: %v", err)
+	}
+	noRegion := model.Company{Name: "区域基准公司乙", Code: "RGB"}
+	if err := store.DB.Create(&noRegion).Error; err != nil {
+		t.Fatalf("seed company: %v", err)
+	}
+	t.Cleanup(func() {
+		store.DB.Where("code IN ?", []string{"RGA", "RGB"}).Delete(&model.Company{})
+	})
+
+	// 空 ID 集合：无基准、RegionOf 仍注入（网络维保留）
+	geo := PresenceGeoFor(nil)
+	if geo.RegionByCompany != nil || geo.RegionOf == nil {
+		t.Fatalf("empty ids must yield nil region map with resolver: %+v", geo)
+	}
+
+	geo = PresenceGeoFor([]int64{dg.ID, noRegion.ID, 999999})
+	if len(geo.RegionByCompany) != 1 || geo.RegionByCompany[dg.ID] != "广东省|东莞市" {
+		t.Fatalf("region map must only carry non-empty regions: %+v", geo.RegionByCompany)
+	}
+	if geo.RegionOf == nil {
+		t.Fatal("geoip resolver must always be injected")
 	}
 }

@@ -205,3 +205,66 @@ func TestCompanyWriteRequiresAdminRole(t *testing.T) {
 		t.Fatalf("user delete status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// 公司区域（region）round-trip 契约（2026-09-26 市级漫游升级）：
+// 「省|市」创建/更新/读回一致、分段空格归一、空串合法（跳过地理维）、
+// 三段以上 400；region 是漫游判定的按公司基准，组织页维护
+func TestCompanyRegionRoundTrip(t *testing.T) {
+	r := setupCompanyRouter(t)
+	token := adminToken(t)
+
+	rec := doStorageJSON(t, r, http.MethodPost, "/api/v1/companies", token, gin.H{
+		"name": "区域基准测试公司", "code": "REGION", "region": " 广东省 | 东莞市 ",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create with region status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	regionID := companyIDOf(t, rec)
+	var resp struct {
+		Data model.Company `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Data.Region != "广东省|东莞市" {
+		t.Fatalf("region must normalize to 广东省|东莞市, got %q", resp.Data.Region)
+	}
+
+	// 更新改区域（苏州分公司口径）→ 读回一致；清空（空串）→ 跳过地理维合法
+	rec = doStorageJSON(t, r, http.MethodPut, fmt.Sprintf("/api/v1/companies/%d", regionID), token, gin.H{
+		"name": "区域基准测试公司", "code": "REGION", "region": "江苏省|苏州市",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update region status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	resp.Data = model.Company{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode updated: %v", err)
+	}
+	if resp.Data.Region != "江苏省|苏州市" {
+		t.Fatalf("updated region mismatch: %q", resp.Data.Region)
+	}
+	rec = doStorageJSON(t, r, http.MethodPut, fmt.Sprintf("/api/v1/companies/%d", regionID), token, gin.H{
+		"name": "区域基准测试公司", "code": "REGION", "region": "",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear region status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	resp.Data = model.Company{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode cleared: %v", err)
+	}
+	if resp.Data.Region != "" {
+		t.Fatalf("cleared region must be empty, got %q", resp.Data.Region)
+	}
+
+	// 三段以上 400（市级比对只认省|市两层）
+	rec = doStorageJSON(t, r, http.MethodPut, fmt.Sprintf("/api/v1/companies/%d", regionID), token, gin.H{
+		"name": "区域基准测试公司", "code": "REGION", "region": "广东省|东莞市|南城街道",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("three-segment region must 400, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	_ = doStorageJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/v1/companies/%d", regionID), token, nil)
+}

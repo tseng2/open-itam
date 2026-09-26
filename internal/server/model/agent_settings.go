@@ -12,13 +12,14 @@ import (
 //
 // 联动红线：offline_threshold_sec 必须大于 heartbeat_interval_sec——
 // 阈值若小于心跳周期，健康终端的心跳间隔本身就击穿阈值（全员假失联），
-// 保存时由 API 层校验拒收
+// 保存时由 API 层校验拒收。
+// 漫游地理基准不在本表（2026-09-26 市级升级）：基准按资产所属公司
+// 取 companies.region，全局省份字段 company_province 已删除
 type AgentSettings struct {
 	ID                   int64     `gorm:"primaryKey" json:"id"`
-	HeartbeatIntervalSec int       `json:"heartbeat_interval_sec"`                   // 心跳上报周期（秒）
-	FullIntervalSec      int       `json:"full_interval_sec"`                        // 全量上报周期（秒）
-	OfflineThresholdSec  int       `json:"offline_threshold_sec"`                    // 失联判定阈值（秒），须大于心跳周期
-	CompanyProvince      string    `gorm:"type:varchar(32)" json:"company_province"` // 公司所在省（GeoIP 出口省份比对的基准，与 ip2region 库名对齐）
+	HeartbeatIntervalSec int       `json:"heartbeat_interval_sec"` // 心跳上报周期（秒）
+	FullIntervalSec      int       `json:"full_interval_sec"`     // 全量上报周期（秒）
+	OfflineThresholdSec  int       `json:"offline_threshold_sec"` // 失联判定阈值（秒），须大于心跳周期
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 
@@ -28,12 +29,11 @@ func (AgentSettings) TableName() string { return "agent_settings" }
 const AgentSettingsSingletonID = 1
 
 // 采集与判定默认值（用户 2026-09-26 拍板：心跳 1 小时 / full 6 小时，
-// 阈值 65 分钟略大于心跳；公司所在省缺省广东省——ip2region v4 库名口径）
+// 阈值 65 分钟略大于心跳）
 const (
 	DefaultHeartbeatIntervalSec = 3600
 	DefaultFullIntervalSec      = 21600
 	DefaultOfflineThresholdSec  = 3900
-	DefaultCompanyProvince      = "广东省"
 )
 
 // DefaultAgentSettings 内置缺省（无行 / 查询失败时的回落值）
@@ -43,7 +43,6 @@ func DefaultAgentSettings() AgentSettings {
 		HeartbeatIntervalSec: DefaultHeartbeatIntervalSec,
 		FullIntervalSec:     DefaultFullIntervalSec,
 		OfflineThresholdSec: DefaultOfflineThresholdSec,
-		CompanyProvince:     DefaultCompanyProvince,
 	}
 }
 

@@ -107,7 +107,7 @@ func main() {
 	// 失联阈值与漫游地理基准经闭包实时读 agent_settings（设置页保存即生效）；
 	// ctx 随进程退出自动取消
 	alertEngine := webhook.NewEngine(db, st,
-		v1.EffectivePresenceTimeout, v1.EffectivePresenceGeo, v1.NewAlertNotifier())
+		v1.EffectivePresenceTimeout, v1.PresenceGeoFor, v1.NewAlertNotifier())
 	engineCtx, stopEngine := context.WithCancel(context.Background())
 	defer stopEngine()
 	go alertEngine.Run(engineCtx, webhook.DefaultScanInterval)
