@@ -111,6 +111,37 @@
         </el-form>
       </el-tab-pane>
 
+      <el-tab-pane label="Agent 采集与失联判定">
+        <el-alert
+          title="心跳/全量上报周期与失联阈值由服务端统一下发（Agent v0.2.6 起动态生效，老版本沿用自身默认）；失联阈值必须大于心跳周期，否则健康终端会被误判失联"
+          type="info"
+          show-icon
+          :closable="false"
+          style="margin-bottom: 20px"
+        />
+        <el-form label-width="180px" style="max-width: 680px">
+          <el-form-item label="心跳上报周期 (分钟)">
+            <el-input-number v-model="agentCfg.heartbeatMin" :min="1" :max="1440" style="width: 160px" />
+            <span class="cfg-hint">终端动态信息（登录人/网络/心跳）上报频率</span>
+          </el-form-item>
+          <el-form-item label="全量上报周期 (分钟)">
+            <el-input-number v-model="agentCfg.fullMin" :min="5" :max="10080" style="width: 160px" />
+            <span class="cfg-hint">硬件基线/软件清单等全量采集，不能小于心跳周期</span>
+          </el-form-item>
+          <el-form-item label="失联判定阈值 (分钟)">
+            <el-input-number v-model="agentCfg.thresholdMin" :min="2" :max="2880" style="width: 160px" />
+            <span class="cfg-hint">心跳超过该时长未上报即判「疑似失联」，必须大于心跳周期</span>
+          </el-form-item>
+          <el-form-item label="公司所在省份">
+            <el-input v-model="agentCfg.companyProvince" placeholder="如: 广东省（与 IP 归属地库口径一致）" style="width: 320px" />
+            <span class="cfg-hint">出口 IP 异省/海外判「漫游中」的比对基准；留空则不做地理维判定</span>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" :loading="agentCfg.saving" @click="saveAgentCfg">保存采集配置</el-button>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
       <el-tab-pane label="AD / 目录服务 (Identity Hub)">
         <el-form label-width="180px" style="max-width: 680px; margin-top: 16px">
           <el-form-item label="LDAP 服务器地址">
@@ -173,6 +204,56 @@ const webhook = reactive({
   testing: false,
 })
 
+// Agent 采集与失联判定（agent_settings 单例）：表单以分钟呈现、
+// 提交换算秒；联动校验（阈值>心跳、full≥心跳）前端先拦一道，
+// 服务端为权威校验（400 原样展示）
+const agentCfg = reactive({
+  heartbeatMin: 60,
+  fullMin: 360,
+  thresholdMin: 65,
+  companyProvince: '',
+  saving: false,
+})
+
+async function loadAgentCfg() {
+  try {
+    const res = await api('/api/v1/agent-settings')
+    const d = res.data || {}
+    agentCfg.heartbeatMin = Math.round((d.heartbeat_interval_sec || 3600) / 60)
+    agentCfg.fullMin = Math.round((d.full_interval_sec || 21600) / 60)
+    agentCfg.thresholdMin = Math.round((d.offline_threshold_sec || 3900) / 60)
+    agentCfg.companyProvince = d.company_province || ''
+  } catch { /* 非 admin 或加载失败保持默认展示 */ }
+}
+
+async function saveAgentCfg() {
+  if (agentCfg.thresholdMin <= agentCfg.heartbeatMin) {
+    ElMessage.warning('失联判定阈值必须大于心跳周期')
+    return
+  }
+  if (agentCfg.fullMin < agentCfg.heartbeatMin) {
+    ElMessage.warning('全量上报周期不能小于心跳周期')
+    return
+  }
+  agentCfg.saving = true
+  try {
+    await api('/api/v1/agent-settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        heartbeat_interval_sec: agentCfg.heartbeatMin * 60,
+        full_interval_sec: agentCfg.fullMin * 60,
+        offline_threshold_sec: agentCfg.thresholdMin * 60,
+        company_province: agentCfg.companyProvince,
+      }),
+    })
+    ElMessage.success('采集配置已保存，终端在下一轮心跳自动生效（v0.2.6+）')
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    agentCfg.saving = false
+  }
+}
+
 onMounted(async () => {
   try {
     const res = await api('/api/v1/protection/modules')
@@ -194,6 +275,7 @@ onMounted(async () => {
   } catch (e) {
     ElMessage.error('加载 Webhook 告警配置失败: ' + e.message)
   }
+  loadAgentCfg()
 })
 
 async function saveEnabled(key, target, enabled) {
@@ -272,4 +354,5 @@ async function testWebhook() {
 .settings-card { border-radius: 8px; min-height: 480px; }
 .protection-card-header { display: flex; align-items: center; justify-content: space-between; }
 .cooldown-hint { margin-left: 8px; font-size: 13px; color: #6b7280; }
+.cfg-hint { margin-left: 8px; font-size: 12px; color: #9ca3af; }
 </style>
