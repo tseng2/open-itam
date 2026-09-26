@@ -107,7 +107,7 @@
 - `brand` (品牌) / `model` (型号) / `serial_number` (硬件序列号 SN)
 - 账面硬件规格（人工维护的台账值，覆盖无 Agent 终端；Agent 仅在字段为空时回填初始化，不覆盖人工值）：
   - `cpu_name` / `memory_size` / `main_disk` / `secondary_disk` / `gpu_name` / `mac_address`
-- 采购与财务：`purchase_date` / `acceptor` (验收人) / `warranty_period` (保修期) / `original_price` (原值不含税) / `net_value` (净值) / `sec_encrypted` (加密软件绿盾纳管) / `remark`
+- 采购与财务：`purchase_date` / `acceptor` (验收人) / `warranty_period` (保修期) / `original_price` (原值不含税) / `net_value` (净值) / `sec_encrypted` (终端加密系统纳管标记——产品名不落码，2026-09-26 通用化) / `remark`
 - `current_version` (当前硬件基线版本号)
 - 派生计算列（不入库，前端实时计算）：购入年份、已使用天数/月数
 
@@ -151,7 +151,7 @@
 - `borrow_date` (领用日期) / `return_date` (归还日期)
 - `brand` / `spec` (规格容量) / `device_code` (设备编码)
 - `quantity` (领用数量) / `return_qty` (归还数量)
-- `sec_certified` (绿盾认证) / `remark`
+- `sec_certified` (加密系统认证——通用标记，产品名不落码，2026-09-26 通用化) / `remark`
 
 #### 实体 8：配件出入库流水 (PartRecord) - `part_records`
 对应台账"配件记录表"，是独立于单个资产的库存流水。
