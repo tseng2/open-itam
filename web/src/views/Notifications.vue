@@ -3,7 +3,7 @@
     <div class="page-header">
       <div class="title-area">
         <h2>消息中心</h2>
-        <span class="subtitle">我的站内信收件箱：设备申请、资产告警、耗材预警、许可到期四类事件源；点击消息就地已读并跳转关联页面</span>
+        <span class="subtitle">我的站内信收件箱：设备申请、资产告警、耗材预警、许可到期、软件超用、异地漫游六类事件源；点击消息就地已读并跳转关联页面</span>
       </div>
       <div class="actions">
         <el-button type="primary" plain :disabled="!unreadCount" @click="markAllRead">{{ markAllLabel }}</el-button>
