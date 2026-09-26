@@ -18,6 +18,8 @@ import (
 	"itagent/internal/server/store"
 	"itagent/internal/shared/hwfilter"
 	"itagent/internal/shared/protocol"
+
+	"gorm.io/gorm"
 )
 
 type Config struct {
@@ -133,6 +135,12 @@ func NewHandler(s store.Store, cfg Config) *Handler {
 	// 报表中心（P2 体验运营）：管理视角聚合面，仅 admin
 	h.mux.Handle("/api/v1/reports", ginEngine)
 	h.mux.Handle("/api/v1/reports/", ginEngine)
+	// 软件合规比对（阶段三）：受控软件池（读面登录可访问 + 写面 admin）
+	// 与合规报表（admin-only）。外层 mux 挂载两行不可漏（A1 的 404 教训）
+	h.mux.Handle("/api/v1/software-pools", ginEngine)
+	h.mux.Handle("/api/v1/software-pools/", ginEngine)
+	h.mux.Handle("/api/v1/software-compliance", ginEngine)
+	h.mux.Handle("/api/v1/software-compliance/", ginEngine)
 
 	return h
 }
@@ -420,6 +428,51 @@ func (h *Handler) processFullReport(r *http.Request, env protocol.Envelope) {
 
 	// 核心：将 Agent 采集上报的终端硬件画像与实物资产台账自动关联
 	h.syncToAssetLedger(env.DeviceID, full)
+	// 阶段三数据地基：软件清单结构化落库。须在台账关联之后调用——
+	// 公司归属取自本条上报建立/刷新的资产绑定（旁路语义，失败只记日志）
+	h.syncDeviceSoftware(env.DeviceID, full.Software)
+}
+
+// syncDeviceSoftware 终端软件清单结构化落库（阶段三软件合规的地基）：
+// full 上报（每小时）时按终端**全量覆盖**——卸载即消失，无软删除语义。
+// 未绑定台账资产的终端不参与合规统计（公司归属无来源），绑定后下一条
+// full 上报自动纳入。空名条目（卸载残留键）不入库
+func (h *Handler) syncDeviceSoftware(deviceID string, software []protocol.Software) {
+	if store.DB == nil {
+		return
+	}
+	var dev model.Device
+	if err := store.DB.Where("device_id = ?", deviceID).First(&dev).Error; err != nil || dev.AssetID == nil || *dev.AssetID <= 0 {
+		return
+	}
+	var asset model.Asset
+	if err := store.DB.First(&asset, *dev.AssetID).Error; err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	if err := store.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("device_id = ?", deviceID).Delete(&model.DeviceSoftware{}).Error; err != nil {
+			return err
+		}
+		rows := make([]model.DeviceSoftware, 0, len(software))
+		for _, sw := range software {
+			if strings.TrimSpace(sw.Name) == "" {
+				continue
+			}
+			rows = append(rows, model.DeviceSoftware{
+				CompanyID: asset.CompanyID, DeviceID: deviceID, AssetID: asset.ID,
+				Name: sw.Name, Version: sw.Version, InstallPath: sw.InstallPath,
+				SeenAt: now,
+			})
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		return tx.Create(&rows).Error
+	}); err != nil {
+		// 软件落库是上报主流程的旁路：失败不阻塞、不影响已有告警/快照
+		log.Printf("[ingest] sync device software %s: %v", deviceID, err)
+	}
 }
 
 func (h *Handler) syncToAssetLedger(deviceID string, full protocol.FullPayload) {

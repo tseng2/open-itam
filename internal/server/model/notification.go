@@ -13,7 +13,8 @@ const (
 	NotificationTypeAssetRequest       = "asset_request"        // 设备申请：新申请待办 / 审批结果回执
 	NotificationTypeConsumableLowStock = "consumable_low_stock" // 耗材库存预警：触线沿触发提醒
 	NotificationTypeAssetAlert         = "asset_alert"          // 资产告警：超期未归 / 疑似失联（A4 引擎联动）
-	NotificationTypeLicenseExpiring   = "license_expiring"     // 软件许可到期提醒：ExpiringDays 窗口扫描
+	NotificationTypeLicenseExpiring    = "license_expiring"     // 软件许可到期提醒：ExpiringDays 窗口扫描
+	NotificationTypeSoftwareOveruse    = "software_overuse"     // 软件超用：受控池项安装数超过挂接许可席位（阶段三合规引擎）
 )
 
 // Notification 单条站内信。UserID 是收件人（只读自己的收件箱），
